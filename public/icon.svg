@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0F766E" />
+  <rect x="36" y="36" width="440" height="440" rx="88" fill="none" stroke="#14B8A6" stroke-opacity="0.35" stroke-width="6" />
+  <!-- Market Stall Roof / Awning -->
+  <path d="M116 184 L148 118 H364 L396 184 Z" fill="#FAF9F6" />
+  <path d="M116 184 C116 208 148 214 166 196 C184 214 216 214 234 196 C252 214 260 214 278 196 C296 214 328 214 346 196 C364 214 396 208 396 184 Z" fill="#F59E0B" />
+  <!-- Stall Body -->
+  <rect x="138" y="218" width="236" height="164" rx="22" fill="#FAF9F6" />
+  <!-- Arch Doorway -->
+  <path d="M214 382 V296 C214 272 232 254 256 254 C280 254 298 272 298 296 V382 Z" fill="#0F766E" />
+  <!-- Highlight Pin Dot -->
+  <circle cx="256" cy="151" r="14" fill="#0F766E" />
+</svg>

@@ -443,12 +443,13 @@ export function AdDetailPage({ adId, onNavigate, onFavoriteChanged }: AdDetailPa
               <button
                 type="button"
                 onClick={async () => {
+                  const shareUrl = `${window.location.origin}/ad/${encodeURIComponent(ad.id)}`;
                   const shareText = `${ad.title} — ${formatPriceSDG(ad.price, ad.ad_type)} | سوق أبو جبيهة`;
                   try {
                     if (navigator.share) {
-                      await navigator.share({ title: ad.title, text: shareText, url: window.location.href });
+                      await navigator.share({ title: ad.title, text: shareText, url: shareUrl });
                     } else if (navigator.clipboard) {
-                      await navigator.clipboard.writeText(`${shareText}\n${window.location.href}`);
+                      await navigator.clipboard.writeText(`${shareText}\n${shareUrl}`);
                     }
                     setCopiedShare(true);
                     setTimeout(() => setCopiedShare(false), 2200);

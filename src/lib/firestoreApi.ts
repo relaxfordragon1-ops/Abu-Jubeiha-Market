@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   query,
   serverTimestamp,
   setDoc,
@@ -25,10 +26,12 @@ import type {
   AdminOverview,
   AdStatus,
   AdType,
+  AppNotification,
   Category,
   ChatMessage,
   Conversation,
   HeroPromotion,
+  NotificationType,
   ReportItem,
   User,
   UserRole,
@@ -162,6 +165,7 @@ function mapHeroDoc(id: string, data: any): HeroPromotion {
     amount_sdg: Number(data.amountSdg ?? 0),
     payment_method: String(data.paymentMethod || ''),
     payment_reference: String(data.paymentReference || ''),
+    payment_receipt_url: String(data.paymentReceiptUrl || ''),
     status: data.status || 'pending',
     sort_order: Number(data.sortOrder ?? 1),
     is_sample: Boolean(data.isSample),
@@ -776,6 +780,7 @@ export async function createHeroPromotionRequest(
     package_days: number;
     payment_method: string;
     payment_reference: string;
+    payment_receipt_url?: string;
   }
 ): Promise<string> {
   const amount = HERO_PACKAGES[payload.package_days] ?? 10000;
@@ -803,6 +808,7 @@ export async function createHeroPromotionRequest(
       amountSdg: amount,
       paymentMethod: clampStr(payload.payment_method, 60),
       paymentReference: clampStr(payload.payment_reference, 120),
+      paymentReceiptUrl: clampStr(payload.payment_receipt_url || '', 500),
       status: 'pending',
       sortOrder: 10,
       isSample: false,
@@ -1012,6 +1018,17 @@ export async function sendMessage(
       createdAt: serverTimestamp(),
     });
 
+    // Fire-and-forget notification for recipient
+    void createNotification({
+      userId: receiverId,
+      title: `رسالة جديدة من ${sender.name}`,
+      body: cleanBody.slice(0, 140),
+      type: 'message',
+      linkAdId: adId || '',
+      linkUserId: sender.id,
+      linkPage: 'messages',
+    }).catch(() => {});
+
     return {
       id,
       ad_id: adId,
@@ -1024,6 +1041,158 @@ export async function sendMessage(
     };
   } catch (err) {
     handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+export function subscribeToUserMessages(
+  uid: string,
+  onUpdate: (payload: { conversations: Conversation[]; unreadCount: number; rawDocs: Array<{ id: string; data: any }> }) => void
+): () => void {
+  const q = query(collection(db, 'messages'), where('participants', 'array-contains', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const map = new Map<string, Conversation>();
+      const rows: Array<{ id: string; data: any }> = [];
+      let unreadCount = 0;
+
+      snap.forEach((d) => {
+        const data = d.data();
+        rows.push({ id: d.id, data });
+        if (data.receiverId === uid && !data.isRead) {
+          unreadCount++;
+        }
+      });
+
+      rows.sort((a, b) =>
+        toIsoString(b.data.createdAt).localeCompare(toIsoString(a.data.createdAt))
+      );
+
+      for (const { data } of rows) {
+        const isSender = data.senderId === uid;
+        const otherId = isSender ? String(data.receiverId) : String(data.senderId);
+        const otherName = isSender
+          ? String(data.receiverName || 'مستخدم')
+          : String(data.senderName || 'مستخدم');
+        const otherAvatar = isSender
+          ? String(data.receiverAvatar || '')
+          : String(data.senderAvatar || '');
+        const adId = data.adId ? String(data.adId) : null;
+        const key = `${otherId}__${adId ?? 'general'}`;
+        const existing = map.get(key);
+        const unreadAdd = !isSender && !data.isRead ? 1 : 0;
+
+        if (!existing) {
+          map.set(key, {
+            other_user_id: otherId,
+            other_user_name: otherName,
+            other_user_avatar: otherAvatar,
+            other_user_verified: false,
+            ad_id: adId,
+            ad_title: String(data.adTitle || 'محادثة عامة'),
+            last_message: String(data.body || ''),
+            last_at: toIsoString(data.createdAt),
+            unread_count: unreadAdd,
+          });
+        } else {
+          existing.unread_count += unreadAdd;
+        }
+      }
+
+      onUpdate({
+        conversations: Array.from(map.values()),
+        unreadCount,
+        rawDocs: rows,
+      });
+    },
+    (err) => {
+      handleFirestoreError(err, OperationType.GET, 'messages');
+    }
+  );
+}
+
+// ==================== NOTIFICATIONS ====================
+
+export async function createNotification(payload: {
+  userId: string;
+  title: string;
+  body: string;
+  type: NotificationType;
+  linkAdId?: string;
+  linkUserId?: string;
+  linkPage?: string;
+}): Promise<void> {
+  if (!payload.userId) return;
+  const id = generateId('notif');
+  const path = `notifications/${id}`;
+  try {
+    await setDoc(doc(db, 'notifications', id), {
+      userId: clampStr(payload.userId, 128),
+      title: clampStr(payload.title, 160),
+      body: clampStr(payload.body, 500),
+      type: payload.type,
+      linkAdId: clampStr(payload.linkAdId || '', 128),
+      linkUserId: clampStr(payload.linkUserId || '', 128),
+      linkPage: clampStr(payload.linkPage || '', 60),
+      isRead: false,
+      createdAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+export function subscribeToNotifications(
+  uid: string,
+  onUpdate: (notifications: AppNotification[]) => void
+): () => void {
+  const q = query(collection(db, 'notifications'), where('userId', '==', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: AppNotification[] = [];
+      snap.forEach((d) => {
+        const data = d.data();
+        list.push({
+          id: d.id,
+          user_id: String(data.userId || ''),
+          title: String(data.title || ''),
+          body: String(data.body || ''),
+          type: (data.type || 'system') as NotificationType,
+          link_ad_id: String(data.linkAdId || ''),
+          link_user_id: String(data.linkUserId || ''),
+          link_page: String(data.linkPage || ''),
+          is_read: Boolean(data.isRead),
+          created_at: toIsoString(data.createdAt),
+        });
+      });
+      list.sort((a, b) => b.created_at.localeCompare(a.created_at));
+      onUpdate(list.slice(0, 30));
+    },
+    (err) => {
+      handleFirestoreError(err, OperationType.GET, 'notifications');
+    }
+  );
+}
+
+export async function markNotificationRead(notifId: string): Promise<void> {
+  const path = `notifications/${notifId}`;
+  try {
+    await updateDoc(doc(db, 'notifications', notifId), { isRead: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+export async function markAllNotificationsRead(notifications: AppNotification[]): Promise<void> {
+  const unread = notifications.filter((n) => !n.is_read);
+  if (unread.length === 0) return;
+  try {
+    const batch = writeBatch(db);
+    unread.slice(0, 100).forEach((n) => batch.update(doc(db, 'notifications', n.id), { isRead: true }));
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, 'notifications');
   }
 }
 
@@ -1169,6 +1338,21 @@ export async function adminModerateAd(
       `مراجعة إعلان (${payload.status ?? existing.status})`,
       String(existing.title || adId)
     );
+
+    const ownerId = String(existing.ownerId || '');
+    if (ownerId && ownerId !== actor.id && (payload.status === 'approved' || payload.status === 'rejected')) {
+      void createNotification({
+        userId: ownerId,
+        title: payload.status === 'approved' ? 'تمت الموافقة على إعلانك' : 'لم يتم اعتماد إعلانك',
+        body:
+          payload.status === 'approved'
+            ? `أصبح إعلانك "${String(existing.title || '')}" منشوراً ومتاحاً لجميع المتصفحين.`
+            : `إعلانك "${String(existing.title || '')}" بحاجة لتعديل: ${payload.rejection_reason || 'راجع شروط النشر'}`,
+        type: payload.status === 'approved' ? 'ad_approved' : 'ad_rejected',
+        linkAdId: adId,
+        linkPage: payload.status === 'approved' ? 'ad-detail' : 'account',
+      }).catch(() => {});
+    }
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
@@ -1242,6 +1426,7 @@ export async function adminCreateHeroPromotion(
       amountSdg: Math.max(0, Number(payload.amount_sdg) || 0),
       paymentMethod: 'دفع مباشر للإدارة',
       paymentReference: 'ADMIN-DIRECT',
+      paymentReceiptUrl: '',
       status: 'active',
       sortOrder: Number(payload.sort_order) || 1,
       isSample: false,
@@ -1296,6 +1481,21 @@ export async function adminUpdateHeroPromotion(
       `تحديث حالة البنر المدفوع (${status})`,
       String(existing.title || promoId)
     );
+
+    const promoOwner = String(existing.userId || '');
+    if (promoOwner && promoOwner !== actor.id && (status === 'active' || status === 'rejected')) {
+      void createNotification({
+        userId: promoOwner,
+        title: status === 'active' ? 'تم تفعيل إعلانك المدفوع' : 'تم رفض طلب الترويج المدفوع',
+        body:
+          status === 'active'
+            ? `إعلانك "${String(existing.title || '')}" يظهر الآن في بنر الواجهة الرئيسية.`
+            : `تعذر تفعيل بنر "${String(existing.title || '')}". يرجى مراجعة بيانات الدفع والتواصل مع الإدارة.`,
+        type: status === 'active' ? 'hero_active' : 'hero_rejected',
+        linkAdId: String(existing.adId || ''),
+        linkPage: 'account',
+      }).catch(() => {});
+    }
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
   }

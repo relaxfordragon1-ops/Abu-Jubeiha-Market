@@ -10,12 +10,14 @@ import {
   Camera,
   Sparkles,
   X,
+  Upload,
 } from 'lucide-react';
 import {
   uploadImages,
   formatPriceSDG,
   formatArabicDate,
   getAdStatusLabel,
+  getRemainingDaysLabel,
   ABU_JUBEIHA_AREAS,
 } from '../lib/api';
 import {
@@ -62,6 +64,8 @@ export function AccountPage({
   const [promoDays, setPromoDays] = useState<number>(7);
   const [promoPaymentMethod, setPromoPaymentMethod] = useState('بنكك');
   const [promoPaymentRef, setPromoPaymentRef] = useState('');
+  const [promoReceiptUrl, setPromoReceiptUrl] = useState('');
+  const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [promoSubmitting, setPromoSubmitting] = useState(false);
   const [promoFeedback, setPromoFeedback] = useState('');
 
@@ -170,6 +174,20 @@ export function AccountPage({
     }
   };
 
+  const handleReceiptUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    setProfileErr('');
+    setUploadingReceipt(true);
+    try {
+      const urls = await uploadImages([e.target.files[0]]);
+      if (urls[0]) setPromoReceiptUrl(urls[0]);
+    } catch (err: any) {
+      setProfileErr(err.message || 'تعذر رفع صورة الإيصال');
+    } finally {
+      setUploadingReceipt(false);
+    }
+  };
+
   const handleSubmitHeroPromotion = async (e: FormEvent) => {
     e.preventDefault();
     if (!promotingAd) return;
@@ -181,10 +199,12 @@ export function AccountPage({
         package_days: promoDays,
         payment_method: promoPaymentMethod,
         payment_reference: promoPaymentRef.trim(),
+        payment_receipt_url: promoReceiptUrl,
       });
       setPromoFeedback(msg);
       setPromotingAd(null);
       setPromoPaymentRef('');
+      setPromoReceiptUrl('');
       await loadMyAds();
       onAdsChanged();
     } catch (err: any) {
@@ -562,39 +582,48 @@ export function AccountPage({
                 طلبات الإعلان المميز المدفوع (بنر الواجهة)
               </h3>
               <div className="space-y-2">
-                {myPromotions.map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 bg-stone-50 rounded-xl border border-stone-200 text-xs"
-                  >
-                    <div>
-                      <p className="font-bold text-stone-900">{p.title}</p>
-                      <p className="text-stone-500 mt-0.5 tabular-nums">
-                        الباقة: {p.package_days} أيام · {formatPriceSDG(p.amount_sdg)} ·{' '}
-                        {p.payment_method} ({p.payment_reference})
-                      </p>
-                    </div>
-                    <span
-                      className={`font-bold px-2.5 py-1 rounded-lg w-fit ${
-                        p.status === 'active'
-                          ? 'bg-teal-100 text-teal-800'
-                          : p.status === 'pending'
-                          ? 'bg-amber-100 text-amber-900'
-                          : 'bg-stone-200 text-stone-700'
-                      }`}
+                {myPromotions.map((p) => {
+                  const remaining = p.expires_at ? getRemainingDaysLabel(p.expires_at) : '';
+                  return (
+                    <div
+                      key={p.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 bg-stone-50 rounded-xl border border-stone-200 text-xs"
                     >
-                      {p.status === 'active'
-                        ? 'نشط في الواجهة'
-                        : p.status === 'pending'
-                        ? 'قيد تأكيد الدفع'
-                        : p.status === 'paused'
-                        ? 'متوقف مؤقتاً'
-                        : p.status === 'expired'
-                        ? 'منتهي الصلاحية'
-                        : 'مرفوض'}
-                    </span>
-                  </div>
-                ))}
+                      <div className="space-y-0.5">
+                        <p className="font-bold text-stone-900">{p.title}</p>
+                        <p className="text-stone-500 tabular-nums">
+                          الباقة: {p.package_days} أيام · {formatPriceSDG(p.amount_sdg)} ·{' '}
+                          {p.payment_method} ({p.payment_reference})
+                        </p>
+                        {p.expires_at && (
+                          <p className="text-[11px] text-teal-800 font-semibold">
+                            ينتهي في: {formatArabicDate(p.expires_at)}
+                            {remaining ? ` · (${remaining})` : ''}
+                          </p>
+                        )}
+                      </div>
+                      <span
+                        className={`font-bold px-2.5 py-1 rounded-lg w-fit ${
+                          p.status === 'active'
+                            ? 'bg-teal-100 text-teal-800'
+                            : p.status === 'pending'
+                            ? 'bg-amber-100 text-amber-900'
+                            : 'bg-stone-200 text-stone-700'
+                        }`}
+                      >
+                        {p.status === 'active'
+                          ? 'نشط في الواجهة'
+                          : p.status === 'pending'
+                          ? 'قيد تأكيد الدفع'
+                          : p.status === 'paused'
+                          ? 'متوقف مؤقتاً'
+                          : p.status === 'expired'
+                          ? 'منتهي الصلاحية'
+                          : 'مرفوض'}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -665,17 +694,46 @@ export function AccountPage({
                   className="w-full px-3.5 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm"
                 />
               </div>
+              <div>
+                <label className="block text-xs font-semibold text-stone-700 mb-1.5">
+                  صورة إيصال التحويل (اختياري — يُسرّع المراجعة)
+                </label>
+                <div className="flex items-center gap-3">
+                  <label className="px-3.5 py-2 bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-semibold rounded-xl inline-flex items-center gap-2 cursor-pointer">
+                    <Upload className="w-4 h-4" />
+                    <span>{uploadingReceipt ? 'جاري الرفع...' : 'إرفاق صورة الإيصال'}</span>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handleReceiptUpload}
+                      disabled={uploadingReceipt}
+                      className="hidden"
+                    />
+                  </label>
+                  {promoReceiptUrl && (
+                    <img
+                      src={promoReceiptUrl}
+                      alt="إيصال التحويل"
+                      referrerPolicy="no-referrer"
+                      className="w-12 h-12 rounded-lg object-cover border border-stone-200"
+                    />
+                  )}
+                </div>
+              </div>
               <div className="flex items-center gap-2 pt-2">
                 <button
                   type="submit"
-                  disabled={promoSubmitting}
+                  disabled={promoSubmitting || uploadingReceipt}
                   className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-stone-950 text-sm font-extrabold rounded-xl cursor-pointer disabled:opacity-60"
                 >
                   {promoSubmitting ? 'جاري الإرسال...' : 'إرسال طلب التفعيل المدفوع'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setPromotingAd(null)}
+                  onClick={() => {
+                    setPromotingAd(null);
+                    setPromoReceiptUrl('');
+                  }}
                   className="px-4 py-2.5 bg-stone-100 text-stone-700 text-sm font-semibold rounded-xl cursor-pointer"
                 >
                   إلغاء

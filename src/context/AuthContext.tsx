@@ -28,14 +28,19 @@ import {
   fetchAds,
   fetchFavoriteIds,
   fetchUnreadMessagesCount,
+  markAllNotificationsRead,
+  markNotificationRead,
   seedDefaultCategoriesIfEmpty,
   seedSampleListingsInFirestore,
+  subscribeToNotifications,
+  subscribeToUserMessages,
 } from '../lib/firestoreApi';
 import { BOOTSTRAP_ADMIN_EMAILS } from '../lib/marketplaceSearch';
-import type { User, UserRole } from '../types';
+import type { AppNotification, User, UserRole } from '../types';
 
 interface UserStats {
   unreadMessages: number;
+  unreadNotifications: number;
   favoritesCount: number;
   myAdsCount: number;
 }
@@ -89,6 +94,7 @@ export function mapFirebaseAuthError(err: any): string {
 interface AuthContextValue {
   user: User | null;
   stats: UserStats;
+  notifications: AppNotification[];
   loading: boolean;
   emailNotVerified: boolean;
   pendingEmail: string;
@@ -112,6 +118,8 @@ interface AuthContextValue {
     currentPassword?: string;
     newPassword?: string;
   }) => Promise<void>;
+  markNotificationAsRead: (notifId: string) => Promise<void>;
+  markAllNotificationsAsRead: () => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
 }
@@ -120,8 +128,10 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [stats, setStats] = useState<UserStats>({
     unreadMessages: 0,
+    unreadNotifications: 0,
     favoritesCount: 0,
     myAdsCount: 0,
   });
@@ -136,11 +146,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         fetchUnreadMessagesCount(uid),
         fetchAds({ mine: true }, uid),
       ]);
-      setStats({
+      setStats((prev) => ({
+        ...prev,
         favoritesCount: favIds.size,
         unreadMessages,
         myAdsCount: myAds.length,
-      });
+      }));
     } catch {
       // ignore non-fatal stats failure
     }
@@ -349,15 +360,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
         setUser(null);
+        setNotifications([]);
         setEmailNotVerified(false);
         setPendingEmail('');
-        setStats({ unreadMessages: 0, favoritesCount: 0, myAdsCount: 0 });
+        setStats({ unreadMessages: 0, unreadNotifications: 0, favoritesCount: 0, myAdsCount: 0 });
         setLoading(false);
         return;
       }
 
       if (!fbUser.emailVerified) {
         setUser(null);
+        setNotifications([]);
         setEmailNotVerified(true);
         setPendingEmail(fbUser.email || '');
         setLoading(false);
@@ -377,6 +390,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => unsub();
   }, [syncVerifiedUser]);
+
+  // Attach real-time Firestore listeners only when auth is ready and user is authenticated
+  useEffect(() => {
+    if (!user?.id) {
+      setNotifications([]);
+      return;
+    }
+
+    const unsubMsgs = subscribeToUserMessages(user.id, ({ unreadCount }) => {
+      setStats((prev) => ({ ...prev, unreadMessages: unreadCount }));
+    });
+
+    const unsubNotifs = subscribeToNotifications(user.id, (list) => {
+      setNotifications(list);
+      const unreadNotifications = list.filter((n) => !n.is_read).length;
+      setStats((prev) => ({ ...prev, unreadNotifications }));
+    });
+
+    return () => {
+      unsubMsgs();
+      unsubNotifs();
+    };
+  }, [user?.id]);
 
   const refreshMe = useCallback(async () => {
     const current = auth.currentUser;
@@ -546,12 +582,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await refreshMe();
   };
 
+  const markNotificationAsRead = async (notifId: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === notifId ? { ...n, is_read: true } : n))
+    );
+    await markNotificationRead(notifId);
+  };
+
+  const markAllNotificationsAsRead = async () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    await markAllNotificationsRead(notifications);
+  };
+
   const logout = async () => {
     await signOut(auth);
     setUser(null);
+    setNotifications([]);
     setEmailNotVerified(false);
     setPendingEmail('');
-    setStats({ unreadMessages: 0, favoritesCount: 0, myAdsCount: 0 });
+    setStats({ unreadMessages: 0, unreadNotifications: 0, favoritesCount: 0, myAdsCount: 0 });
   };
 
   return (
@@ -559,6 +608,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         stats,
+        notifications,
         loading,
         emailNotVerified,
         pendingEmail,
@@ -569,6 +619,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         resendVerificationEmail,
         reloadVerificationStatus,
         updateAccountProfile,
+        markNotificationAsRead,
+        markAllNotificationsAsRead,
         logout,
         refreshMe,
       }}

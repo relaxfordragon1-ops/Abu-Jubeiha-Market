@@ -1,7 +1,11 @@
 import { useEffect, useState, useCallback, useRef, type FormEvent } from 'react';
 import { Send, MessageSquare, ShieldCheck, ExternalLink, User as UserIcon } from 'lucide-react';
 import { formatArabicDate } from '../lib/api';
-import { fetchConversations, fetchMessageThread, sendMessage } from '../lib/firestoreApi';
+import {
+  fetchMessageThread,
+  sendMessage,
+  subscribeToUserMessages,
+} from '../lib/firestoreApi';
 import { useAuth } from '../context/AuthContext';
 import type { AppRoute, ChatMessage, Conversation } from '../types';
 
@@ -42,20 +46,6 @@ export function MessagesPage({
     }
   }, [initialWithUserId, initialAdId]);
 
-  const loadConversations = useCallback(async () => {
-    if (!user) return;
-    try {
-      const convs = await fetchConversations(user.id);
-      setConversations(convs);
-      if (!selectedUserId && !initialWithUserId && convs.length > 0) {
-        setSelectedUserId(convs[0].other_user_id);
-        setSelectedAdId(convs[0].ad_id);
-      }
-    } catch {
-      // ignore
-    }
-  }, [user, selectedUserId, initialWithUserId]);
-
   const loadThread = useCallback(async () => {
     if (!user || !selectedUserId) return;
     try {
@@ -69,22 +59,24 @@ export function MessagesPage({
   }, [user, selectedUserId, selectedAdId, refreshMe]);
 
   useEffect(() => {
-    loadConversations();
-  }, [loadConversations]);
-
-  useEffect(() => {
     loadThread();
   }, [loadThread]);
 
-  // Light polling while viewing an active thread
+  // Real-time Firestore listener for conversations & active thread
   useEffect(() => {
-    if (!user) return;
-    const timer = setInterval(() => {
-      loadConversations();
-      if (selectedUserId) loadThread();
-    }, 6000);
-    return () => clearInterval(timer);
-  }, [user, selectedUserId, loadConversations, loadThread]);
+    if (!user?.id) return;
+    const unsub = subscribeToUserMessages(user.id, ({ conversations: convs }) => {
+      setConversations(convs);
+      if (!selectedUserId && !initialWithUserId && convs.length > 0) {
+        setSelectedUserId(convs[0].other_user_id);
+        setSelectedAdId(convs[0].ad_id);
+      }
+      if (selectedUserId) {
+        void loadThread();
+      }
+    });
+    return () => unsub();
+  }, [user?.id, selectedUserId, initialWithUserId, loadThread]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -115,7 +107,6 @@ export function MessagesPage({
       const sent = await sendMessage(user, selectedUserId, selectedAdId, draft.trim());
       setMessages((prev) => [...prev, sent]);
       setDraft('');
-      await loadConversations();
     } catch (err: any) {
       setError(err.message);
     } finally {

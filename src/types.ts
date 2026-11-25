@@ -149,6 +149,7 @@ export interface HeroPromotion {
   amount_sdg: number;
   payment_method: string;
   payment_reference: string;
+  payment_receipt_url?: string;
   status: 'pending' | 'active' | 'paused' | 'rejected' | 'expired';
   sort_order: number;
   is_sample: boolean;
@@ -162,6 +163,27 @@ export interface HeroPromotion {
   owner_verified?: boolean;
   ad_title?: string;
   category_name?: string;
+}
+
+export type NotificationType =
+  | 'message'
+  | 'ad_approved'
+  | 'ad_rejected'
+  | 'hero_active'
+  | 'hero_rejected'
+  | 'system';
+
+export interface AppNotification {
+  id: string;
+  user_id: string;
+  title: string;
+  body: string;
+  type: NotificationType;
+  link_ad_id: string;
+  link_user_id: string;
+  link_page: string;
+  is_read: boolean;
+  created_at: string;
 }
 
 export type AppRoute =

@@ -1,10 +1,114 @@
-import { auth } from './firebase';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { auth, storage } from './firebase';
+
+async function compressImageFile(file: File): Promise<File> {
+  if (!file.type.startsWith('image/') || file.type === 'image/gif') {
+    return file;
+  }
+
+  // Skip tiny images already under 140KB
+  if (file.size <= 140 * 1024) {
+    return file;
+  }
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+
+    img.onload = () => {
+      try {
+        const MAX_DIM = 1280;
+        let { width, height } = img;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width >= height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl);
+          resolve(file);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const targetMime = 'image/webp';
+        canvas.toBlob(
+          (blob) => {
+            URL.revokeObjectURL(objectUrl);
+            if (!blob || blob.size >= file.size) {
+              resolve(file);
+              return;
+            }
+            const baseName = file.name.replace(/\.[^.]+$/, '') || 'image';
+            resolve(new File([blob], `${baseName}.webp`, { type: targetMime }));
+          },
+          targetMime,
+          0.82
+        );
+      } catch {
+        URL.revokeObjectURL(objectUrl);
+        resolve(file);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(file);
+    };
+
+    img.src = objectUrl;
+  });
+}
+
+async function uploadToFirebaseStorage(file: File, uid: string): Promise<string> {
+  const ext = file.type === 'image/webp' ? 'webp' : file.type === 'image/png' ? 'png' : 'jpg';
+  const rand = Math.random().toString(36).slice(2, 10);
+  const storageRef = ref(storage, `marketplace/${uid}/${Date.now()}-${rand}.${ext}`);
+
+  const uploadPromise = uploadBytes(storageRef, file, {
+    contentType: file.type || 'image/jpeg',
+    cacheControl: 'public, max-age=31536000',
+  }).then((snap) => getDownloadURL(snap.ref));
+
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('storage-timeout')), 6000)
+  );
+
+  return Promise.race([uploadPromise, timeoutPromise]);
+}
 
 export async function uploadImages(files: FileList | File[]): Promise<string[]> {
+  const rawList = Array.from(files).slice(0, 6);
+  if (rawList.length === 0) return [];
+
+  const compressedFiles = await Promise.all(rawList.map((f) => compressImageFile(f)));
+  const uid = auth.currentUser?.uid;
+
+  // Attempt Firebase Cloud Storage first so images persist across deployments
+  if (uid) {
+    try {
+      const cloudUrls = await Promise.all(
+        compressedFiles.map((file) => uploadToFirebaseStorage(file, uid))
+      );
+      if (cloudUrls.length === compressedFiles.length) {
+        return cloudUrls;
+      }
+    } catch {
+      // Fallback transparently to authenticated server upload when Storage bucket rules aren't configured
+    }
+  }
+
   const formData = new FormData();
-  Array.from(files)
-    .slice(0, 6)
-    .forEach((f) => formData.append('images', f));
+  compressedFiles.forEach((f) => formData.append('images', f));
 
   const headers = new Headers();
   const idToken = await auth.currentUser?.getIdToken();
@@ -20,7 +124,7 @@ export async function uploadImages(files: FileList | File[]): Promise<string[]> 
       body: formData,
     });
   } catch {
-    throw new Error('تعذر رفع الصور إلى الخادم حالياً');
+    throw new Error('تعذر رفع الصور حالياً، يرجى التحقق من اتصال الإنترنت');
   }
 
   const rawText = await res.text();
@@ -57,6 +161,18 @@ export function formatArabicDate(isoString: string): string {
     month: 'short',
     day: 'numeric',
   }).format(date);
+}
+
+export function getRemainingDaysLabel(expiresAtIso: string): string {
+  if (!expiresAtIso) return '';
+  const ms = new Date(expiresAtIso).getTime() - Date.now();
+  if (Number.isNaN(ms)) return '';
+  if (ms <= 0) return 'منتهي الصلاحية';
+  const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
+  if (days === 1) return 'ينتهي خلال أقل من يوم';
+  if (days === 2) return 'متبقي يومان';
+  if (days <= 10) return `متبقي ${days} أيام`;
+  return `متبقي ${days} يوماً`;
 }
 
 export function buildWhatsAppHref(phone: string, adTitle?: string): string {

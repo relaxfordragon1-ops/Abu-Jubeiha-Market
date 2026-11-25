@@ -201,7 +201,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'adId', 'userId', 'ownerName', 'title', 'subtitle', 'imageUrl',
           'priceLabel', 'locationLabel', 'packageDays', 'amountSdg',
-          'paymentMethod', 'paymentReference', 'status', 'sortOrder',
+          'paymentMethod', 'paymentReference', 'paymentReceiptUrl', 'status', 'sortOrder',
           'isSample', 'startsAt', 'expiresAt', 'adminNote', 'createdAt', 'updatedAt'
         ]) &&
         isOptionalString(data.adId, 128) &&
@@ -216,6 +216,7 @@ service cloud.firestore {
         data.amountSdg is number && data.amountSdg >= 0 &&
         isNonEmptyString(data.paymentMethod, 2, 60) &&
         isNonEmptyString(data.paymentReference, 2, 120) &&
+        (!('paymentReceiptUrl' in data) || isOptionalString(data.paymentReceiptUrl, 500)) &&
         data.status in ['pending', 'active', 'paused', 'rejected', 'expired'] &&
         data.sortOrder is number &&
         data.isSample is bool &&
@@ -295,6 +296,24 @@ service cloud.firestore {
         isNonEmptyString(data.actorName, 1, 80) &&
         isNonEmptyString(data.action, 2, 160) &&
         isOptionalString(data.targetInfo, 300) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll([
+          'userId', 'title', 'body', 'type', 'linkAdId', 'linkUserId', 'linkPage', 'isRead', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'title', 'body', 'type', 'linkAdId', 'linkUserId', 'linkPage', 'isRead', 'createdAt'
+        ]) &&
+        isValidId(data.userId) &&
+        isNonEmptyString(data.title, 2, 160) &&
+        isNonEmptyString(data.body, 1, 500) &&
+        data.type in ['message', 'ad_approved', 'ad_rejected', 'hero_active', 'hero_rejected', 'system'] &&
+        isOptionalString(data.linkAdId, 128) &&
+        isOptionalString(data.linkUserId, 128) &&
+        isOptionalString(data.linkPage, 60) &&
+        data.isRead is bool &&
         data.createdAt is timestamp;
     }
 
@@ -612,6 +631,41 @@ service cloud.firestore {
         isValidAuditLog(incoming()) &&
         incoming().actorId == request.auth.uid &&
         incoming().createdAt == request.time;
+    }
+
+    match /notifications/{notifId} {
+      allow get: if isValidId(notifId) && isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        isStaff()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        isStaff()
+      );
+      allow create: if isVerifiedUser() &&
+        isNotBlocked() &&
+        isValidId(notifId) &&
+        isValidNotification(incoming()) &&
+        incoming().isRead == false &&
+        incoming().createdAt == request.time && (
+          isStaff() || (
+            incoming().type == 'message' &&
+            incoming().userId != request.auth.uid &&
+            exists(/databases/$(database)/documents/users/$(incoming().userId))
+          )
+        );
+      allow update: if isSignedIn() &&
+        isValidId(notifId) &&
+        isValidNotification(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().isRead == true &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['isRead']);
+      allow delete: if isSignedIn() && isValidId(notifId) && (
+        existing().userId == request.auth.uid ||
+        isStaff()
+      );
     }
   }
 }

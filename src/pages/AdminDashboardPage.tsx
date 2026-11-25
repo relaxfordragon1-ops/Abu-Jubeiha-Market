@@ -17,12 +17,14 @@ import {
   Pause,
   Play,
   Upload,
+  Receipt,
 } from 'lucide-react';
 import {
   uploadImages,
   formatArabicDate,
   formatPriceSDG,
   getAdStatusLabel,
+  getRemainingDaysLabel,
 } from '../lib/api';
 import {
   adminAddStaff,
@@ -120,6 +122,7 @@ export function AdminDashboardPage({
   const [heroDays, setHeroDays] = useState(7);
   const [heroAmount, setHeroAmount] = useState(10000);
   const [heroSortOrder, setHeroSortOrder] = useState(1);
+  const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
     setTab(initialTab);
@@ -972,9 +975,20 @@ export function AdminDashboardPage({
                             {promo.payment_reference})
                           </p>
                           {promo.expires_at && (
-                            <p className="text-[11px] text-stone-400">
-                              ينتهي في: {formatArabicDate(promo.expires_at)}
+                            <p className="text-[11px] text-teal-800 font-medium">
+                              ينتهي في: {formatArabicDate(promo.expires_at)} (
+                              {getRemainingDaysLabel(promo.expires_at)})
                             </p>
+                          )}
+                          {promo.payment_receipt_url && (
+                            <button
+                              type="button"
+                              onClick={() => setReceiptPreviewUrl(promo.payment_receipt_url || null)}
+                              className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800 hover:underline cursor-pointer"
+                            >
+                              <Receipt className="w-3.5 h-3.5" />
+                              <span>معاينة صورة إيصال الدفع</span>
+                            </button>
                           )}
                         </div>
                       </div>
@@ -1021,6 +1035,35 @@ export function AdminDashboardPage({
                   ))
                 )}
               </div>
+
+              {receiptPreviewUrl && (
+                <div
+                  className="fixed inset-0 z-50 bg-stone-950/80 flex items-center justify-center p-4"
+                  onClick={() => setReceiptPreviewUrl(null)}
+                >
+                  <div
+                    className="bg-white rounded-2xl max-w-lg w-full p-4 space-y-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-sm text-stone-900">صورة إيصال التحويل</h4>
+                      <button
+                        type="button"
+                        onClick={() => setReceiptPreviewUrl(null)}
+                        className="text-stone-500 hover:text-stone-900 cursor-pointer"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <img
+                      src={receiptPreviewUrl}
+                      alt="إيصال التحويل"
+                      referrerPolicy="no-referrer"
+                      className="w-full max-h-[75vh] object-contain rounded-xl bg-stone-100"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

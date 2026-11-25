@@ -152,6 +152,7 @@
         "amountSdg": { "type": "number" },
         "paymentMethod": { "type": "string", "maxLength": 60 },
         "paymentReference": { "type": "string", "maxLength": 120 },
+        "paymentReceiptUrl": { "type": "string", "maxLength": 500 },
         "status": { "type": "string", "enum": ["pending", "active", "paused", "rejected", "expired"] },
         "sortOrder": { "type": "number" },
         "isSample": { "type": "boolean" },
@@ -239,6 +240,23 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["actorId", "action", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notification for messages, ad moderation, and paid hero banner updates",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "type": { "type": "string", "enum": ["message", "ad_approved", "ad_rejected", "hero_active", "hero_rejected", "system"] },
+        "linkAdId": { "type": "string", "maxLength": 128 },
+        "linkUserId": { "type": "string", "maxLength": 128 },
+        "linkPage": { "type": "string", "maxLength": 60 },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "body", "type", "isRead", "createdAt"]
     }
   },
   "firestore": {
@@ -289,6 +307,10 @@
     "/auditLogs/{logId}": {
       "schema": { "$ref": "#/entities/AuditLog" },
       "description": "Immutable administrative audit logs"
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "User notifications for chat messages, ad approvals, and hero banner updates"
     }
   }
 }

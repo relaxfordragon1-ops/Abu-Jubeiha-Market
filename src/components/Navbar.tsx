@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from 'react';
 import {
   Home,
   Heart,
@@ -5,9 +6,13 @@ import {
   MessageSquare,
   User as UserIcon,
   ShieldCheck,
+  Bell,
+  CheckCheck,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import type { AppRoute } from '../types';
+import { formatArabicDate } from '../lib/api';
+import { PWAInstallButton } from './PWAInstallButton';
+import type { AppNotification, AppRoute } from '../types';
 
 interface NavbarProps {
   route: AppRoute;
@@ -15,8 +20,46 @@ interface NavbarProps {
 }
 
 export function Navbar({ route, onNavigate }: NavbarProps) {
-  const { user, stats } = useAuth();
+  const {
+    user,
+    stats,
+    notifications,
+    markNotificationAsRead,
+    markAllNotificationsAsRead,
+  } = useAuth();
   const isStaff = user?.role === 'admin' || user?.role === 'moderator';
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutside = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
+
+  const handleNotificationClick = async (n: AppNotification) => {
+    if (!n.is_read) {
+      await markNotificationAsRead(n.id);
+    }
+    setNotifOpen(false);
+    if (n.link_page === 'messages') {
+      onNavigate({
+        page: 'messages',
+        withUserId: n.link_user_id || undefined,
+        adId: n.link_ad_id || null,
+      });
+    } else if (n.link_page === 'ad-detail' && n.link_ad_id) {
+      onNavigate({ page: 'ad-detail', adId: n.link_ad_id });
+    } else if (n.link_page === 'account') {
+      onNavigate({ page: 'account', tab: 'my-ads' });
+    } else {
+      onNavigate({ page: 'home' });
+    }
+  };
 
   const navLinkClass = (active: boolean) =>
     `text-sm font-medium whitespace-nowrap shrink-0 transition-colors py-1 border-b-2 ${
@@ -29,7 +72,7 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
     <>
       {/* Desktop & Tablet Top Header — Strict 3-Zone Contract */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-stone-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4 sm:gap-8">
           {/* Zone 1: Brand Wordmark */}
           <button
             type="button"
@@ -105,8 +148,79 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
             )}
           </nav>
 
-          {/* Zone 3: Single Primary Action + Compact Account Access */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Zone 3: Install Prompt + Notifications + Primary Action */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <PWAInstallButton />
+
+            {user && (
+              <div className="relative" ref={notifRef}>
+                <button
+                  type="button"
+                  onClick={() => setNotifOpen((prev) => !prev)}
+                  aria-label="الإشعارات"
+                  className="relative p-2 rounded-lg text-stone-600 hover:text-stone-900 hover:bg-stone-100 transition-colors cursor-pointer"
+                >
+                  <Bell className="w-5 h-5" />
+                  {stats.unreadNotifications > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-md bg-amber-500 text-stone-950 text-[10px] font-mono-num font-extrabold flex items-center justify-center">
+                      {stats.unreadNotifications > 9 ? '9+' : stats.unreadNotifications}
+                    </span>
+                  )}
+                </button>
+
+                {notifOpen && (
+                  <div className="absolute left-0 mt-2 w-80 max-w-[92vw] bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden z-50">
+                    <div className="px-4 py-3 border-b border-stone-100 flex items-center justify-between gap-2 bg-stone-50">
+                      <span className="font-bold text-sm text-stone-900">
+                        الإشعارات ({stats.unreadNotifications})
+                      </span>
+                      {stats.unreadNotifications > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void markAllNotificationsAsRead()}
+                          className="text-xs font-semibold text-teal-700 hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <CheckCheck className="w-3.5 h-3.5" />
+                          <span>تحديد الكل كمقروء</span>
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-80 overflow-y-auto divide-y divide-stone-100">
+                      {notifications.length === 0 ? (
+                        <div className="p-6 text-center text-xs text-stone-500">
+                          لا توجد إشعارات حالياً
+                        </div>
+                      ) : (
+                        notifications.map((n) => (
+                          <button
+                            key={n.id}
+                            type="button"
+                            onClick={() => void handleNotificationClick(n)}
+                            className={`w-full p-3.5 text-right hover:bg-stone-50 transition-colors cursor-pointer block ${
+                              !n.is_read ? 'bg-teal-50/50' : ''
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-stone-900">{n.title}</span>
+                              {!n.is_read && (
+                                <span className="w-2 h-2 rounded-full bg-teal-700 shrink-0" />
+                              )}
+                            </div>
+                            <p className="text-xs text-stone-600 mt-1 line-clamp-2 leading-relaxed">
+                              {n.body}
+                            </p>
+                            <p className="text-[11px] text-stone-400 mt-1">
+                              {formatArabicDate(n.created_at)}
+                            </p>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {isStaff && (
               <button
                 type="button"
@@ -122,7 +236,7 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
               onClick={() =>
                 onNavigate(user ? { page: 'ad-new' } : { page: 'auth', mode: 'login' })
               }
-              className="px-4 py-2 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 cursor-pointer"
+              className="px-3.5 sm:px-4 py-2 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 cursor-pointer"
             >
               <PlusCircle className="w-4 h-4" />
               <span>أضف إعلاناً</span>

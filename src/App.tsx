@@ -9,6 +9,8 @@ import {
 } from './lib/firestoreApi';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { getRouteTitle, routeToUrl, urlToRoute } from './lib/routing';
 import { HomePage } from './pages/HomePage';
 import { SearchPage } from './pages/SearchPage';
 import { AdDetailPage } from './pages/AdDetailPage';
@@ -22,7 +24,7 @@ import type { Ad, AppRoute, Category, HeroPromotion } from './types';
 
 function MarketplaceApp() {
   const { user, refreshMe } = useAuth();
-  const [route, setRoute] = useState<AppRoute>({ page: 'home' });
+  const [route, setRoute] = useState<AppRoute>(() => urlToRoute());
   const [categories, setCategories] = useState<Category[]>([]);
   const [ads, setAds] = useState<Ad[]>([]);
   const [heroPromotions, setHeroPromotions] = useState<HeroPromotion[]>([]);
@@ -49,7 +51,25 @@ function MarketplaceApp() {
     loadMarketplaceData();
   }, [loadMarketplaceData]);
 
+  useEffect(() => {
+    document.title = getRouteTitle(route);
+  }, [route]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setRoute(urlToRoute());
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const navigate = useCallback((nextRoute: AppRoute) => {
+    const nextUrl = routeToUrl(nextRoute);
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (nextUrl !== currentUrl) {
+      window.history.pushState(null, '', nextUrl);
+    }
     setRoute(nextRoute);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
@@ -162,6 +182,7 @@ function MarketplaceApp() {
       </main>
 
       <Footer onNavigate={navigate} />
+      <OfflineIndicator />
     </div>
   );
 }
