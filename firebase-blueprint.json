@@ -1,0 +1,294 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Public profile information for a marketplace user",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "location": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["user", "moderator", "admin"] },
+        "isBlocked": { "type": "boolean" },
+        "isVerifiedAccount": { "type": "boolean" },
+        "isSample": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "role", "isBlocked", "isVerifiedAccount", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Private PII (email and phone) strictly isolated to owner and admins",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Verified administrator UID registry",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "ModeratorRecord": {
+      "title": "ModeratorRecord",
+      "description": "Verified moderator UID registry",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "DesignatedStaff": {
+      "title": "DesignatedStaff",
+      "description": "Pre-authorized admin or moderator email allowlist",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "role": { "type": "string", "enum": ["moderator", "admin"] },
+        "addedByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "role", "addedByUid", "createdAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Marketplace main category and embedded bounded subcategories list",
+      "type": "object",
+      "properties": {
+        "slug": { "type": "string", "minLength": 2, "maxLength": 80, "pattern": "^[a-z0-9-]+$" },
+        "nameAr": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "icon": { "type": "string", "maxLength": 60 },
+        "sortOrder": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "subcategories": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["slug", "nameAr", "icon", "sortOrder", "isActive", "subcategories", "updatedAt"]
+    },
+    "Ad": {
+      "title": "Ad",
+      "description": "Marketplace advertisement listing",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "ownerAvatar": { "type": "string", "maxLength": 500 },
+        "ownerVerified": { "type": "boolean" },
+        "categoryId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "categorySlug": { "type": "string", "maxLength": 80 },
+        "categoryName": { "type": "string", "maxLength": 100 },
+        "subcategorySlug": { "type": "string", "maxLength": 80 },
+        "subcategoryName": { "type": "string", "maxLength": 100 },
+        "title": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "description": { "type": "string", "minLength": 5, "maxLength": 4000 },
+        "price": { "type": "number" },
+        "isNegotiable": { "type": "boolean" },
+        "adType": { "type": "string", "enum": ["offer", "wanted", "job", "announcement"] },
+        "location": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "contactPhone": { "type": "string", "minLength": 6, "maxLength": 40 },
+        "contactWhatsapp": { "type": "string", "maxLength": 40 },
+        "documentInfo": { "type": "string", "maxLength": 500 },
+        "hasVerifiedDocs": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "sold"] },
+        "rejectionReason": { "type": "string", "maxLength": 500 },
+        "isFeatured": { "type": "boolean" },
+        "isSample": { "type": "boolean" },
+        "viewsCount": { "type": "number" },
+        "images": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerId",
+        "ownerName",
+        "categoryId",
+        "categorySlug",
+        "categoryName",
+        "title",
+        "description",
+        "price",
+        "isNegotiable",
+        "adType",
+        "location",
+        "contactPhone",
+        "status",
+        "isFeatured",
+        "hasVerifiedDocs",
+        "viewsCount",
+        "images",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "HeroPromotion": {
+      "title": "HeroPromotion",
+      "description": "Paid featured banner shown in the 5-second auto-looping homepage hero carousel",
+      "type": "object",
+      "properties": {
+        "adId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerName": { "type": "string", "maxLength": 80 },
+        "title": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "subtitle": { "type": "string", "maxLength": 200 },
+        "imageUrl": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "priceLabel": { "type": "string", "maxLength": 80 },
+        "locationLabel": { "type": "string", "maxLength": 120 },
+        "packageDays": { "type": "number" },
+        "amountSdg": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 60 },
+        "paymentReference": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["pending", "active", "paused", "rejected", "expired"] },
+        "sortOrder": { "type": "number" },
+        "isSample": { "type": "boolean" },
+        "startsAt": { "type": "string", "maxLength": 60 },
+        "expiresAt": { "type": "string", "maxLength": 60 },
+        "adminNote": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "title",
+        "imageUrl",
+        "packageDays",
+        "amountSdg",
+        "paymentMethod",
+        "paymentReference",
+        "status",
+        "sortOrder",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Favorite": {
+      "title": "Favorite",
+      "description": "Saved favorite advertisement link for a user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "adId", "createdAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Direct buyer-seller message inside the marketplace",
+      "type": "object",
+      "properties": {
+        "adId": { "type": "string", "maxLength": 128 },
+        "adTitle": { "type": "string", "maxLength": 160 },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 80 },
+        "senderAvatar": { "type": "string", "maxLength": 500 },
+        "receiverId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "receiverName": { "type": "string", "maxLength": 80 },
+        "receiverAvatar": { "type": "string", "maxLength": 500 },
+        "participants": { "type": "array" },
+        "body": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "receiverId", "participants", "body", "isRead", "createdAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Moderation report against an ad or user",
+      "type": "object",
+      "properties": {
+        "reporterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reporterName": { "type": "string", "maxLength": 80 },
+        "targetType": { "type": "string", "enum": ["ad", "user"] },
+        "targetAdId": { "type": "string", "maxLength": 128 },
+        "targetAdTitle": { "type": "string", "maxLength": 160 },
+        "targetUserId": { "type": "string", "maxLength": 128 },
+        "targetUserName": { "type": "string", "maxLength": 80 },
+        "reason": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "details": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["open", "reviewed", "dismissed"] },
+        "adminNote": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reporterId", "targetType", "reason", "status", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable administrative action log",
+      "type": "object",
+      "properties": {
+        "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorName": { "type": "string", "maxLength": 80 },
+        "action": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "targetInfo": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorId", "action", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public profile records without PII"
+    },
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Private email and phone PII isolated to owner and staff"
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Verified administrator UID registry"
+    },
+    "/moderators/{uid}": {
+      "schema": { "$ref": "#/entities/ModeratorRecord" },
+      "description": "Verified moderator UID registry"
+    },
+    "/designatedStaff/{emailId}": {
+      "schema": { "$ref": "#/entities/DesignatedStaff" },
+      "description": "Pre-authorized admin and moderator email allowlist"
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Marketplace categories and subcategories"
+    },
+    "/ads/{adId}": {
+      "schema": { "$ref": "#/entities/Ad" },
+      "description": "Marketplace advertisements"
+    },
+    "/heroPromotions/{promoId}": {
+      "schema": { "$ref": "#/entities/HeroPromotion" },
+      "description": "Paid hero carousel banner promotions"
+    },
+    "/favorites/{favoriteId}": {
+      "schema": { "$ref": "#/entities/Favorite" },
+      "description": "User favorite advertisements"
+    },
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Buyer-seller internal messages"
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "Abuse and listing reports"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable administrative audit logs"
+    }
+  }
+}

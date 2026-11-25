@@ -1,0 +1,617 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ==================== GLOBAL PRIMITIVES ====================
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailKey(id) {
+      return id is string && id.size() >= 3 && id.size() <= 160 && id.matches('^[a-zA-Z0-9_.+\\-@]+$');
+    }
+
+    function isNonEmptyString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isOptionalString(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isBootstrapAdminEmail() {
+      return isVerifiedUser() &&
+        request.auth.token.email in [
+          'bossali8833@gmail.com',
+          'alivnawai@gmail.com',
+          'alinawai10010048@gmail.com'
+        ];
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        isBootstrapAdminEmail() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isStaff() {
+      return isVerifiedUser() && (
+        isAdmin() ||
+        exists(/databases/$(database)/documents/moderators/$(request.auth.uid))
+      );
+    }
+
+    function isNotBlocked() {
+      return isVerifiedUser() && (
+        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked == false
+      );
+    }
+
+    // ==================== VALIDATION BLUEPRINTS ====================
+
+    function isValidUserPublic(data) {
+      return data.keys().hasAll([
+          'uid', 'name', 'avatarUrl', 'location', 'role',
+          'isBlocked', 'isVerifiedAccount', 'isSample', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'name', 'avatarUrl', 'location', 'role',
+          'isBlocked', 'isVerifiedAccount', 'isSample', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        isNonEmptyString(data.name, 2, 80) &&
+        isOptionalString(data.avatarUrl, 500) &&
+        isOptionalString(data.location, 120) &&
+        data.role in ['user', 'moderator', 'admin'] &&
+        data.isBlocked is bool &&
+        data.isVerifiedAccount is bool &&
+        data.isSample is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data) {
+      return data.keys().hasAll(['uid', 'email', 'phone', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phone', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        isNonEmptyString(data.email, 3, 160) &&
+        isOptionalString(data.phone, 40) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRoleRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        isValidId(data.uid) &&
+        isNonEmptyString(data.email, 3, 160) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidDesignatedStaff(data) {
+      return data.keys().hasAll(['email', 'role', 'addedByUid', 'createdAt']) &&
+        data.keys().hasOnly(['email', 'role', 'addedByUid', 'createdAt']) &&
+        isNonEmptyString(data.email, 3, 160) &&
+        data.role in ['moderator', 'admin'] &&
+        isValidId(data.addedByUid) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['slug', 'nameAr', 'icon', 'sortOrder', 'isActive', 'subcategories', 'updatedAt']) &&
+        data.keys().hasOnly(['slug', 'nameAr', 'icon', 'sortOrder', 'isActive', 'subcategories', 'updatedAt']) &&
+        isNonEmptyString(data.slug, 2, 80) &&
+        isNonEmptyString(data.nameAr, 2, 100) &&
+        isNonEmptyString(data.icon, 1, 60) &&
+        data.sortOrder is number &&
+        data.isActive is bool &&
+        data.subcategories is list &&
+        data.subcategories.size() <= 40 &&
+        (data.subcategories.size() == 0 || data.subcategories[0] is map) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAd(data) {
+      return data.keys().hasAll([
+          'ownerId', 'ownerName', 'ownerAvatar', 'ownerVerified',
+          'categoryId', 'categorySlug', 'categoryName',
+          'subcategorySlug', 'subcategoryName',
+          'title', 'description', 'price', 'isNegotiable', 'adType',
+          'location', 'contactPhone', 'contactWhatsapp',
+          'documentInfo', 'hasVerifiedDocs', 'status', 'rejectionReason',
+          'isFeatured', 'isSample', 'viewsCount', 'images',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId', 'ownerName', 'ownerAvatar', 'ownerVerified',
+          'categoryId', 'categorySlug', 'categoryName',
+          'subcategorySlug', 'subcategoryName',
+          'title', 'description', 'price', 'isNegotiable', 'adType',
+          'location', 'contactPhone', 'contactWhatsapp',
+          'documentInfo', 'hasVerifiedDocs', 'status', 'rejectionReason',
+          'isFeatured', 'isSample', 'viewsCount', 'images',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.ownerId) &&
+        isNonEmptyString(data.ownerName, 1, 80) &&
+        isOptionalString(data.ownerAvatar, 500) &&
+        data.ownerVerified is bool &&
+        isValidId(data.categoryId) &&
+        isNonEmptyString(data.categorySlug, 1, 80) &&
+        isNonEmptyString(data.categoryName, 1, 100) &&
+        isOptionalString(data.subcategorySlug, 80) &&
+        isOptionalString(data.subcategoryName, 100) &&
+        isNonEmptyString(data.title, 3, 160) &&
+        isNonEmptyString(data.description, 5, 4000) &&
+        data.price is number && data.price >= 0 &&
+        data.isNegotiable is bool &&
+        data.adType in ['offer', 'wanted', 'job', 'announcement'] &&
+        isNonEmptyString(data.location, 2, 120) &&
+        isNonEmptyString(data.contactPhone, 6, 40) &&
+        isOptionalString(data.contactWhatsapp, 40) &&
+        isOptionalString(data.documentInfo, 500) &&
+        data.hasVerifiedDocs is bool &&
+        data.status in ['pending', 'approved', 'rejected', 'sold'] &&
+        isOptionalString(data.rejectionReason, 500) &&
+        data.isFeatured is bool &&
+        data.isSample is bool &&
+        data.viewsCount is number && data.viewsCount >= 0 &&
+        data.images is list &&
+        data.images.size() <= 6 &&
+        (data.images.size() == 0 || (data.images[0] is string && data.images[0].size() <= 500)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidHeroPromotion(data) {
+      return data.keys().hasAll([
+          'adId', 'userId', 'ownerName', 'title', 'subtitle', 'imageUrl',
+          'priceLabel', 'locationLabel', 'packageDays', 'amountSdg',
+          'paymentMethod', 'paymentReference', 'status', 'sortOrder',
+          'isSample', 'startsAt', 'expiresAt', 'adminNote', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'adId', 'userId', 'ownerName', 'title', 'subtitle', 'imageUrl',
+          'priceLabel', 'locationLabel', 'packageDays', 'amountSdg',
+          'paymentMethod', 'paymentReference', 'status', 'sortOrder',
+          'isSample', 'startsAt', 'expiresAt', 'adminNote', 'createdAt', 'updatedAt'
+        ]) &&
+        isOptionalString(data.adId, 128) &&
+        isValidId(data.userId) &&
+        isNonEmptyString(data.ownerName, 1, 80) &&
+        isNonEmptyString(data.title, 3, 160) &&
+        isOptionalString(data.subtitle, 200) &&
+        isNonEmptyString(data.imageUrl, 1, 500) &&
+        isOptionalString(data.priceLabel, 80) &&
+        isOptionalString(data.locationLabel, 120) &&
+        data.packageDays is number && data.packageDays >= 1 && data.packageDays <= 365 &&
+        data.amountSdg is number && data.amountSdg >= 0 &&
+        isNonEmptyString(data.paymentMethod, 2, 60) &&
+        isNonEmptyString(data.paymentReference, 2, 120) &&
+        data.status in ['pending', 'active', 'paused', 'rejected', 'expired'] &&
+        data.sortOrder is number &&
+        data.isSample is bool &&
+        isOptionalString(data.startsAt, 60) &&
+        isOptionalString(data.expiresAt, 60) &&
+        isOptionalString(data.adminNote, 300) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFavorite(data) {
+      return data.keys().hasAll(['userId', 'adId', 'createdAt']) &&
+        data.keys().hasOnly(['userId', 'adId', 'createdAt']) &&
+        isValidId(data.userId) &&
+        isValidId(data.adId) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll([
+          'adId', 'adTitle', 'senderId', 'senderName', 'senderAvatar',
+          'receiverId', 'receiverName', 'receiverAvatar', 'participants',
+          'body', 'isRead', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'adId', 'adTitle', 'senderId', 'senderName', 'senderAvatar',
+          'receiverId', 'receiverName', 'receiverAvatar', 'participants',
+          'body', 'isRead', 'createdAt'
+        ]) &&
+        isOptionalString(data.adId, 128) &&
+        isOptionalString(data.adTitle, 160) &&
+        isValidId(data.senderId) &&
+        isNonEmptyString(data.senderName, 1, 80) &&
+        isOptionalString(data.senderAvatar, 500) &&
+        isValidId(data.receiverId) &&
+        isNonEmptyString(data.receiverName, 1, 80) &&
+        isOptionalString(data.receiverAvatar, 500) &&
+        data.participants is list &&
+        data.participants.size() == 2 &&
+        data.participants[0] is string &&
+        data.participants[1] is string &&
+        isNonEmptyString(data.body, 1, 2000) &&
+        data.isRead is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll([
+          'reporterId', 'reporterName', 'targetType', 'targetAdId', 'targetAdTitle',
+          'targetUserId', 'targetUserName', 'reason', 'details', 'status', 'adminNote',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'reporterId', 'reporterName', 'targetType', 'targetAdId', 'targetAdTitle',
+          'targetUserId', 'targetUserName', 'reason', 'details', 'status', 'adminNote',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.reporterId) &&
+        isNonEmptyString(data.reporterName, 1, 80) &&
+        data.targetType in ['ad', 'user'] &&
+        isOptionalString(data.targetAdId, 128) &&
+        isOptionalString(data.targetAdTitle, 160) &&
+        isOptionalString(data.targetUserId, 128) &&
+        isOptionalString(data.targetUserName, 80) &&
+        isNonEmptyString(data.reason, 2, 160) &&
+        isOptionalString(data.details, 1000) &&
+        data.status in ['open', 'reviewed', 'dismissed'] &&
+        isOptionalString(data.adminNote, 400) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorId', 'actorName', 'action', 'targetInfo', 'createdAt']) &&
+        data.keys().hasOnly(['actorId', 'actorName', 'action', 'targetInfo', 'createdAt']) &&
+        isValidId(data.actorId) &&
+        isNonEmptyString(data.actorName, 1, 80) &&
+        isNonEmptyString(data.action, 2, 160) &&
+        isOptionalString(data.targetInfo, 300) &&
+        data.createdAt is timestamp;
+    }
+
+    // ==================== COLLECTION RULES ====================
+
+    match /test/connection {
+      allow get: if true;
+    }
+
+    match /users/{userId} {
+      // Public profile contains zero PII (email/phone are isolated in /private/info)
+      allow get: if isValidId(userId);
+      allow list: if resource.data.isBlocked == false || isStaff();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserPublic(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            isOwner(userId) &&
+            incoming().isBlocked == false &&
+            incoming().isSample == false && (
+              (incoming().role == 'user' && incoming().isVerifiedAccount == false) ||
+              (
+                incoming().role == 'moderator' &&
+                incoming().isVerifiedAccount == true &&
+                exists(/databases/$(database)/documents/moderators/$(request.auth.uid))
+              )
+            )
+          )
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserPublic(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isStaff() && incoming().diff(existing()).affectedKeys().hasOnly(['isBlocked', 'isVerifiedAccount', 'updatedAt'])) ||
+          (
+            isOwner(userId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatarUrl', 'location', 'updatedAt']) &&
+            incoming().role == existing().role &&
+            incoming().isBlocked == existing().isBlocked &&
+            incoming().isVerifiedAccount == existing().isVerifiedAccount
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(userId);
+
+      // Strictly isolated PII subcollection
+      match /private/info {
+        allow get: if isOwner(userId) || isStaff();
+        allow create: if isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidUserPrivate(incoming()) &&
+          incoming().uid == userId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          (isOwner(userId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidUserPrivate(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (isOwner(userId) || isAdmin()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'email', 'updatedAt']);
+        allow delete: if isAdmin() && isValidId(userId);
+      }
+    }
+
+    match /admins/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(uid) &&
+        isValidRoleRecord(incoming()) &&
+        incoming().uid == uid &&
+        incoming().createdAt == request.time && (
+          isAdmin() || (
+            isOwner(uid) &&
+            incoming().email == request.auth.token.email &&
+            exists(/databases/$(database)/documents/designatedStaff/$(request.auth.token.email)) &&
+            get(/databases/$(database)/documents/designatedStaff/$(request.auth.token.email)).data.role == 'admin'
+          )
+        );
+      allow delete: if isAdmin() && isValidId(uid) && uid != request.auth.uid;
+    }
+
+    match /moderators/{uid} {
+      allow get: if isOwner(uid) || isStaff();
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(uid) &&
+        isValidRoleRecord(incoming()) &&
+        incoming().uid == uid &&
+        incoming().createdAt == request.time && (
+          isAdmin() || (
+            isOwner(uid) &&
+            incoming().email == request.auth.token.email &&
+            exists(/databases/$(database)/documents/designatedStaff/$(request.auth.token.email)) &&
+            get(/databases/$(database)/documents/designatedStaff/$(request.auth.token.email)).data.role == 'moderator'
+          )
+        );
+      allow delete: if isAdmin() && isValidId(uid);
+    }
+
+    match /designatedStaff/{emailDoc} {
+      allow get: if isValidEmailKey(emailDoc) && (
+        isAdmin() ||
+        (isVerifiedUser() && request.auth.token.email == emailDoc)
+      );
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidEmailKey(emailDoc) &&
+        isValidDesignatedStaff(incoming()) &&
+        incoming().email == emailDoc &&
+        incoming().addedByUid == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow update: if isAdmin() &&
+        isValidEmailKey(emailDoc) &&
+        isValidDesignatedStaff(incoming()) &&
+        incoming().email == existing().email &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['role', 'addedByUid']);
+      allow delete: if isAdmin() && isValidEmailKey(emailDoc) && emailDoc != request.auth.token.email;
+    }
+
+    match /categories/{categoryId} {
+      allow get: if isValidId(categoryId);
+      allow list: if resource.data.isActive == true || isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(categoryId) &&
+        isValidCategory(incoming()) &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() &&
+        isValidId(categoryId) &&
+        isValidCategory(incoming()) &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['nameAr', 'icon', 'sortOrder', 'isActive', 'subcategories', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(categoryId);
+    }
+
+    match /ads/{adId} {
+      allow get: if isValidId(adId) && (
+        resource.data.status == 'approved' ||
+        isOwner(resource.data.ownerId) ||
+        isStaff()
+      );
+      allow list: if resource.data.status == 'approved' ||
+        (isSignedIn() && resource.data.ownerId == request.auth.uid) ||
+        isStaff();
+
+      allow create: if isVerifiedUser() &&
+        isNotBlocked() &&
+        isValidId(adId) &&
+        isValidAd(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isStaff() || (
+            incoming().ownerId == request.auth.uid &&
+            incoming().status == 'pending' &&
+            incoming().isFeatured == false &&
+            incoming().hasVerifiedDocs == false &&
+            incoming().isSample == false &&
+            incoming().viewsCount == 0
+          )
+        );
+
+      allow update: if isVerifiedUser() &&
+        isNotBlocked() &&
+        isValidId(adId) &&
+        isValidAd(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isStaff() || (
+            isOwner(existing().ownerId) &&
+            existing().status != 'sold' && (
+              (
+                incoming().status == 'sold' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              ) || (
+                incoming().status == 'pending' &&
+                incoming().isFeatured == existing().isFeatured &&
+                incoming().hasVerifiedDocs == existing().hasVerifiedDocs &&
+                incoming().viewsCount == existing().viewsCount &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'categoryId', 'categorySlug', 'categoryName',
+                  'subcategorySlug', 'subcategoryName',
+                  'title', 'description', 'price', 'isNegotiable', 'adType',
+                  'location', 'contactPhone', 'contactWhatsapp',
+                  'documentInfo', 'images', 'status', 'updatedAt'
+                ])
+              )
+            )
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(adId) && (isOwner(existing().ownerId) || isStaff());
+    }
+
+    match /heroPromotions/{promoId} {
+      allow get: if isValidId(promoId) && (
+        resource.data.status == 'active' ||
+        isOwner(resource.data.userId) ||
+        isStaff()
+      );
+      allow list: if resource.data.status == 'active' ||
+        (isSignedIn() && resource.data.userId == request.auth.uid) ||
+        isStaff();
+
+      allow create: if isVerifiedUser() &&
+        isNotBlocked() &&
+        isValidId(promoId) &&
+        isValidHeroPromotion(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isStaff() || (
+            incoming().userId == request.auth.uid &&
+            incoming().status == 'pending' &&
+            incoming().isSample == false
+          )
+        );
+
+      allow update: if isStaff() &&
+        isValidId(promoId) &&
+        isValidHeroPromotion(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'sortOrder', 'startsAt', 'expiresAt', 'adminNote', 'updatedAt'
+        ]);
+
+      allow delete: if isStaff() && isValidId(promoId);
+    }
+
+    match /favorites/{favoriteId} {
+      allow get: if isValidId(favoriteId) && isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerifiedUser() &&
+        isValidId(favoriteId) &&
+        isValidFavorite(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/ads/$(incoming().adId));
+      allow delete: if isSignedIn() && isValidId(favoriteId) && existing().userId == request.auth.uid;
+    }
+
+    match /messages/{messageId} {
+      allow get: if isValidId(messageId) && isSignedIn() && (
+        request.auth.uid in resource.data.participants ||
+        isStaff()
+      );
+      allow list: if isSignedIn() && (
+        request.auth.uid in resource.data.participants ||
+        isStaff()
+      );
+      allow create: if isVerifiedUser() &&
+        isNotBlocked() &&
+        isValidId(messageId) &&
+        isValidMessage(incoming()) &&
+        incoming().senderId == request.auth.uid &&
+        incoming().receiverId != request.auth.uid &&
+        request.auth.uid in incoming().participants &&
+        incoming().receiverId in incoming().participants &&
+        incoming().isRead == false &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().receiverId));
+      allow update: if isVerifiedUser() &&
+        isValidId(messageId) &&
+        isValidMessage(incoming()) &&
+        existing().receiverId == request.auth.uid &&
+        incoming().senderId == existing().senderId &&
+        incoming().receiverId == existing().receiverId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().isRead == true &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['isRead']);
+    }
+
+    match /reports/{reportId} {
+      allow get: if isValidId(reportId) && (
+        isStaff() || (isSignedIn() && resource.data.reporterId == request.auth.uid)
+      );
+      allow list: if isStaff() || (isSignedIn() && resource.data.reporterId == request.auth.uid);
+      allow create: if isVerifiedUser() &&
+        isNotBlocked() &&
+        isValidId(reportId) &&
+        isValidReport(incoming()) &&
+        incoming().reporterId == request.auth.uid &&
+        incoming().status == 'open' &&
+        incoming().adminNote == '' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isStaff() &&
+        isValidId(reportId) &&
+        isValidReport(incoming()) &&
+        incoming().reporterId == existing().reporterId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNote', 'updatedAt']);
+      allow delete: if isStaff() && isValidId(reportId);
+    }
+
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isStaff();
+      allow list: if isStaff();
+      allow create: if isStaff() &&
+        isValidId(logId) &&
+        isValidAuditLog(incoming()) &&
+        incoming().actorId == request.auth.uid &&
+        incoming().createdAt == request.time;
+    }
+  }
+}
