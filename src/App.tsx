@@ -24,7 +24,7 @@ import { AdminDashboardPage } from './pages/AdminDashboardPage';
 import type { Ad, AppRoute, Category, HeroPromotion } from './types';
 
 function MarketplaceApp() {
-  const { user, refreshMe } = useAuth();
+  const { user, refreshMe, authSyncError } = useAuth();
   const [route, setRoute] = useState<AppRoute>(() => urlToRoute());
   const [categories, setCategories] = useState<Category[]>([]);
   const [ads, setAds] = useState<Ad[]>([]);
@@ -93,6 +93,18 @@ function MarketplaceApp() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FAF9F6] text-stone-900">
+      {authSyncError && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-800 text-center" dir="rtl">
+          تعذر استعادة جلسة الدخول: {authSyncError}
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mr-2 underline font-bold"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      )}
       <Navbar route={route} onNavigate={navigate} />
 
       <main className="flex-1">
