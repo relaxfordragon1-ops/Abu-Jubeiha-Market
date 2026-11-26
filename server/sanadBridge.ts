@@ -5,7 +5,15 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 type VerifyFirebaseFn = (
   idToken: string
-) => Promise<{ ok: boolean; localId?: string; email?: string; disabled?: boolean; status?: number; error?: string }>;
+) => Promise<{
+  ok: boolean;
+  localId?: string;
+  email?: string;
+  emailVerified?: boolean;
+  disabled?: boolean;
+  status?: number;
+  error?: string;
+}>;
 
 interface FsTokenCache {
   token: string;
@@ -73,7 +81,7 @@ function requireSanadKey(req: Request, res: Response, next: NextFunction): void 
   next();
 }
 
-function resolveAppBaseUrl(req: Request): string {
+export function resolveAppBaseUrl(req: Request): string {
   const envUrl = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
   if (envUrl && envUrl !== 'MY_APP_URL') {
     try {
@@ -606,33 +614,81 @@ function formatReportSummary(doc: Record<string, unknown>): Record<string, unkno
   };
 }
 
-// Per-IP rate limiter for public AI help proxy
-const helpRateBuckets = new Map<string, { count: number; resetAt: number }>();
-function publicHelpRateLimit(req: Request, res: Response, next: NextFunction): void {
-  const ip =
-    (typeof req.headers['x-forwarded-for'] === 'string' && req.headers['x-forwarded-for'].split(',')[0].trim()) ||
-    req.ip ||
-    'unknown';
-  const now = Date.now();
-  if (helpRateBuckets.size > 1500) {
-    for (const [k, v] of helpRateBuckets) {
-      if (v.resetAt <= now) helpRateBuckets.delete(k);
+// Fixed-window rate limiter factory. Keys come from req.ip (requires app 'trust proxy')
+// or from a verified user id; never from the raw X-Forwarded-For header.
+function makeRateBucket(max: number, windowMs: number): (key: string) => boolean {
+  const buckets = new Map<string, { count: number; resetAt: number }>();
+  return (key: string): boolean => {
+    const now = Date.now();
+    if (buckets.size > 1500) {
+      for (const [k, v] of buckets) {
+        if (v.resetAt <= now) buckets.delete(k);
+      }
     }
-  }
-  const bucket = helpRateBuckets.get(ip);
-  if (!bucket || bucket.resetAt <= now) {
-    helpRateBuckets.set(ip, { count: 1, resetAt: now + 60_000 });
+    const bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      buckets.set(key, { count: 1, resetAt: now + windowMs });
+      return true;
+    }
+    if (bucket.count >= max) return false;
+    bucket.count += 1;
+    return true;
+  };
+}
+
+function ipRateLimit(max: number, windowMs: number, message: string) {
+  const allow = makeRateBucket(max, windowMs);
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!allow(req.ip || 'unknown')) {
+      res.status(429).json({ error: message, detail: message });
+      return;
+    }
     next();
-    return;
+  };
+}
+
+const publicHelpRateLimit = ipRateLimit(
+  20,
+  60_000,
+  'تم تجاوز الحد المؤقت لعدد الأسئلة. يرجى الانتظار دقيقة ثم المحاولة مجدداً.'
+);
+const publicSearchRateLimit = ipRateLimit(
+  60,
+  60_000,
+  'تم تجاوز الحد المؤقت لعدد عمليات البحث. يرجى الانتظار دقيقة ثم المحاولة مجدداً.'
+);
+const notifyAllow = makeRateBucket(10, 60_000);
+
+// Cache of approved ads for the public search endpoint (avoids a full collection read per request)
+const APPROVED_CACHE_TTL_MS = 60_000;
+let approvedAdsCache: { at: number; rows: Array<Record<string, unknown>> } | null = null;
+async function getApprovedAdsCached(): Promise<Array<Record<string, unknown>>> {
+  if (approvedAdsCache && Date.now() - approvedAdsCache.at < APPROVED_CACHE_TTL_MS) {
+    return approvedAdsCache.rows;
   }
-  if (bucket.count >= 20) {
-    res.status(429).json({
-      error: 'تم تجاوز الحد المؤقت لعدد الأسئلة. يرجى الانتظار دقيقة ثم المحاولة مجدداً.',
-    });
-    return;
+  const rows = await runFirestoreQuery('ads', {
+    whereEquals: [{ field: 'status', value: 'approved' }],
+    limit: 1000,
+  });
+  approvedAdsCache = { at: Date.now(), rows };
+  return rows;
+}
+
+// Single approved ad lookup for server-rendered share previews (Open Graph)
+const adPreviewCache = new Map<string, { at: number; ad: Record<string, unknown> | null }>();
+export async function getPublicApprovedAd(adId: string): Promise<Record<string, unknown> | null> {
+  const hit = adPreviewCache.get(adId);
+  if (hit && Date.now() - hit.at < 60_000) return hit.ad;
+  let ad: Record<string, unknown> | null = null;
+  try {
+    const doc = await getFirestoreDoc('ads', adId);
+    ad = doc && doc.status === 'approved' ? doc : null;
+  } catch {
+    ad = null;
   }
-  bucket.count += 1;
-  next();
+  if (adPreviewCache.size > 500) adPreviewCache.clear();
+  adPreviewCache.set(adId, { at: Date.now(), ad });
+  return ad;
 }
 
 export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: VerifyFirebaseFn): void {
@@ -1042,16 +1098,14 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
   });
 
   // 7. Public Approved Ads Search (for Sanad Public Help Widget)
-  app.get('/api/public/ads/search', async (req: Request, res: Response) => {
+  app.get('/api/public/ads/search', publicSearchRateLimit, async (req: Request, res: Response) => {
     const q = clampStr(req.query.q || '', 120).toLowerCase();
     const category = clampStr(req.query.category || '', 80).toLowerCase();
     const limit = Math.min(Math.max(Number(req.query.limit) || 6, 1), 12);
     const baseUrl = resolveAppBaseUrl(req);
 
     try {
-      const rawAds = await runFirestoreQuery('ads', {
-        whereEquals: [{ field: 'status', value: 'approved' }],
-      });
+      const rawAds = await getApprovedAdsCached();
       const ads = rawAds
         .filter((a) => {
           if (category) {
@@ -1112,6 +1166,15 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
       return;
     }
 
+    if (!verified.emailVerified) {
+      res.status(403).json({ error: 'يرجى تأكيد بريدك الإلكتروني أولاً.' });
+      return;
+    }
+    if (!notifyAllow(verified.localId)) {
+      res.status(429).json({ error: 'تم تجاوز الحد المؤقت للإشعارات، يرجى المحاولة بعد قليل.' });
+      return;
+    }
+
     const sanadUrl = getSanadApiUrl();
     const secret = getSanadWebhookSecret();
     if (!sanadUrl || !secret) {
@@ -1131,7 +1194,16 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
       const s = clampStr(rawPath, 500);
       if (!s) return undefined;
       if (s.startsWith('/') && !s.startsWith('//') && baseUrl) return `${baseUrl}${s}`;
-      return s;
+      // Only forward absolute URLs that point at our own origin or Firebase/Google storage hosts
+      try {
+        const u = new URL(s);
+        const allowedHosts = new Set(['firebasestorage.googleapis.com', 'storage.googleapis.com']);
+        if (baseUrl) allowedHosts.add(new URL(baseUrl).host);
+        if (u.protocol === 'https:' && allowedHosts.has(u.host)) return u.toString();
+      } catch {
+        // not a valid absolute URL
+      }
+      return undefined;
     };
 
     const payload = {
