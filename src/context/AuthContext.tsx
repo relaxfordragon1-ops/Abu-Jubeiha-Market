@@ -98,6 +98,7 @@ interface AuthContextValue {
   loading: boolean;
   emailNotVerified: boolean;
   pendingEmail: string;
+  authSyncError: string;
   loginWithGoogle: () => Promise<User>;
   loginWithEmail: (email: string, password: string) => Promise<User>;
   registerWithEmail: (payload: {
@@ -138,6 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState<boolean>(true);
   const [emailNotVerified, setEmailNotVerified] = useState<boolean>(false);
   const [pendingEmail, setPendingEmail] = useState<string>('');
+  const [authSyncError, setAuthSyncError] = useState<string>('');
 
   const loadStatsForUid = useCallback(async (uid: string) => {
     try {
@@ -379,13 +381,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setEmailNotVerified(false);
       setPendingEmail('');
-      try {
-        await syncVerifiedUser(fbUser);
-      } catch {
-        setUser(null);
-      } finally {
-        setLoading(false);
+      setAuthSyncError('');
+
+      // A page reload must not look like a logout because of a transient/network failure:
+      // retry the profile sync a few times and surface the real error if it keeps failing.
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await syncVerifiedUser(fbUser);
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          console.error('syncVerifiedUser failed (attempt ' + (attempt + 1) + ')', err);
+          if (!auth.currentUser) break;
+          await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+        }
       }
+      if (lastErr) {
+        setUser(null);
+        if (auth.currentUser) {
+          let msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+          try {
+            const parsed = JSON.parse(msg) as { error?: string; path?: string | null };
+            msg = `${parsed.error || msg}${parsed.path ? ` (${parsed.path})` : ''}`;
+          } catch {
+            // not a JSON error message
+          }
+          setAuthSyncError(msg.slice(0, 300));
+        }
+      }
+      setLoading(false);
     });
 
     return () => unsub();
@@ -612,6 +638,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         emailNotVerified,
         pendingEmail,
+        authSyncError,
         loginWithGoogle,
         loginWithEmail,
         registerWithEmail,
