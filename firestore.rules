@@ -326,7 +326,7 @@ service cloud.firestore {
     match /users/{userId} {
       // Public profile contains zero PII (email/phone are isolated in /private/info)
       allow get: if isValidId(userId);
-      allow list: if resource.data.isBlocked == false || isStaff();
+      allow list: if isSignedIn() && (resource.data.isBlocked == false || isStaff());
 
       allow create: if isVerifiedUser() &&
         isValidId(userId) &&
@@ -483,7 +483,12 @@ service cloud.firestore {
             incoming().isFeatured == false &&
             incoming().hasVerifiedDocs == false &&
             incoming().isSample == false &&
-            incoming().viewsCount == 0
+            incoming().viewsCount == 0 && (
+              incoming().ownerVerified == false || (
+                exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isVerifiedAccount == true
+              )
+            )
           )
         );
 
@@ -651,6 +656,10 @@ service cloud.firestore {
           isStaff() || (
             incoming().type == 'message' &&
             incoming().userId != request.auth.uid &&
+            incoming().title.matches('(?s)^رسالة جديدة من .*') &&
+            incoming().linkPage == 'messages' &&
+            incoming().linkUserId == request.auth.uid &&
+            incoming().body.size() <= 140 &&
             exists(/databases/$(database)/documents/users/$(incoming().userId))
           )
         );
