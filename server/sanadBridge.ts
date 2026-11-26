@@ -691,6 +691,77 @@ export async function getPublicApprovedAd(adId: string): Promise<Record<string, 
   return ad;
 }
 
+const escalateAllow = makeRateBucket(5, 600_000);
+
+// Really forwards an escalated help question to the admins: creates an open report in
+// Firestore (visible in the admin dashboard) and relays it to Sanad. Returns true only if
+// at least one of the two succeeded, so the widget never claims a false "admins notified".
+async function recordEscalation(
+  question: string,
+  ctx: { page?: string; adId?: string },
+  ip: string
+): Promise<boolean> {
+  if (!escalateAllow(ip)) return false;
+  let saved = false;
+  const reportId = `rep_help_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+
+  try {
+    const { token } = await getFirestoreAdminAuth();
+    await commitFirestoreWrite(
+      [
+        makeCreateWrite(
+          'reports',
+          reportId,
+          {
+            reporterId: 'visitor_help',
+            reporterName: 'زائر (مساعد السوق)',
+            targetType: ctx.adId ? 'ad' : 'user',
+            targetAdId: clampStr(ctx.adId || '', 128),
+            targetAdTitle: '',
+            targetUserId: '',
+            targetUserName: '',
+            reason: 'استفسار/شكوى محوّلة من مساعد السوق',
+            details: clampStr(question, 1000),
+            status: 'open',
+            adminNote: '',
+          },
+          ['createdAt', 'updatedAt']
+        ),
+      ],
+      token
+    );
+    saved = true;
+  } catch (err) {
+    console.error('Escalation report write failed:', err instanceof Error ? err.message : err);
+  }
+
+  const sanadUrl = getSanadApiUrl();
+  const secret = getSanadWebhookSecret();
+  if (sanadUrl && secret) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    try {
+      const resp = await fetch(`${sanadUrl}/api/webhooks/market`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-sanad-key': secret },
+        body: JSON.stringify({
+          event: 'new_report',
+          id: reportId,
+          reason: 'استفسار/شكوى محوّلة من مساعد السوق',
+          message: clampStr(question, 600),
+        }),
+        signal: controller.signal,
+      });
+      if (resp.ok) saved = true;
+    } catch {
+      // webhook is best-effort
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return saved;
+}
+
 export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: VerifyFirebaseFn): void {
   // 1. Admin Stats
   app.get('/api/sanad/stats', requireSanadKey, async (_req: Request, res: Response) => {
@@ -1304,7 +1375,13 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
         });
         return;
       }
-      res.json(data || { answer: '', escalated: false });
+      const result: Record<string, unknown> = data || { answer: '', escalated: false };
+      if (result.escalated === true) {
+        const recorded = await recordEscalation(question, context, req.ip || 'unknown');
+        result.escalated = recorded;
+        if (!recorded) result.escalationFailed = true;
+      }
+      res.json(result);
     } catch {
       res.status(503).json({
         detail: 'تعذر الاتصال بمساعد سند حالياً، يرجى المحاولة لاحقاً.',
