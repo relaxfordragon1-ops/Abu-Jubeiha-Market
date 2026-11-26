@@ -211,6 +211,7 @@ export async function seedSampleListingsInFirestore(
   adminUid: string,
   adminName: string
 ): Promise<number> {
+  invalidateApprovedAdsCache();
   try {
     await seedDefaultCategoriesIfEmpty();
     const existingAds = await getDocs(collection(db, 'ads'));
@@ -392,6 +393,32 @@ export async function seedSampleListingsInFirestore(
   }
 }
 
+// Short-lived shared cache of the approved-ads snapshot so that fetchCategories and
+// fetchAds (called together on every load) do not each re-read every approved ad.
+const APPROVED_ADS_TTL_MS = 15_000;
+let approvedAdsCache: {
+  at: number;
+  promise: Promise<Awaited<ReturnType<typeof getDocs>>>;
+} | null = null;
+
+export function invalidateApprovedAdsCache(): void {
+  approvedAdsCache = null;
+}
+
+function getApprovedAdsSnapshot(): Promise<Awaited<ReturnType<typeof getDocs>>> {
+  const now = Date.now();
+  if (approvedAdsCache && now - approvedAdsCache.at < APPROVED_ADS_TTL_MS) {
+    return approvedAdsCache.promise;
+  }
+  const promise = getDocs(query(collection(db, 'ads'), where('status', '==', 'approved')));
+  const entry = { at: now, promise };
+  approvedAdsCache = entry;
+  promise.catch(() => {
+    if (approvedAdsCache === entry) approvedAdsCache = null;
+  });
+  return promise;
+}
+
 export async function fetchCategories(includeInactive = false): Promise<Category[]> {
   try {
     const q = includeInactive
@@ -399,7 +426,7 @@ export async function fetchCategories(includeInactive = false): Promise<Category
       : query(collection(db, 'categories'), where('isActive', '==', true));
     const [catSnap, adsSnap] = await Promise.all([
       getDocs(q),
-      getDocs(query(collection(db, 'ads'), where('status', '==', 'approved'))),
+      getApprovedAdsSnapshot(),
     ]);
 
     const counts = new Map<string, number>();
@@ -486,8 +513,9 @@ export async function fetchAds(
       adsQuery = query(collection(db, 'ads'), where('status', '==', 'approved'));
     }
 
+    const useApprovedCache = !(filters.mine && currentUid) && !filters.includeAll;
     const [snap, favSet] = await Promise.all([
-      getDocs(adsQuery),
+      useApprovedCache ? getApprovedAdsSnapshot() : getDocs(adsQuery),
       currentUid ? fetchFavoriteIds(currentUid) : Promise.resolve(new Set<string>()),
     ]);
 
@@ -624,6 +652,7 @@ export async function createAd(
     images: string[];
   }
 ): Promise<{ id: string; message: string }> {
+  invalidateApprovedAdsCache();
   const prohibited = checkProhibitedContent(`${payload.title} ${payload.description}`);
   if (prohibited) {
     throw new Error(`يحتوي الإعلان على مصطلح غير مسموح به (${prohibited})`);
@@ -716,6 +745,7 @@ export async function updateAd(
     images: string[];
   }
 ): Promise<{ message: string }> {
+  invalidateApprovedAdsCache();
   const prohibited = checkProhibitedContent(`${payload.title} ${payload.description}`);
   if (prohibited) {
     throw new Error(`يحتوي الإعلان على مصطلح غير مسموح به (${prohibited})`);
@@ -773,6 +803,7 @@ export async function updateAd(
 }
 
 export async function updateAdStatus(adId: string, status: 'sold' | 'pending'): Promise<void> {
+  invalidateApprovedAdsCache();
   const path = `ads/${adId}`;
   try {
     await updateDoc(doc(db, 'ads', adId), {
@@ -785,6 +816,7 @@ export async function updateAdStatus(adId: string, status: 'sold' | 'pending'): 
 }
 
 export async function deleteAd(adId: string): Promise<void> {
+  invalidateApprovedAdsCache();
   const path = `ads/${adId}`;
   try {
     await deleteDoc(doc(db, 'ads', adId));
@@ -1387,6 +1419,7 @@ export async function adminModerateAd(
     has_verified_docs?: boolean;
   }
 ): Promise<void> {
+  invalidateApprovedAdsCache();
   const path = `ads/${adId}`;
   try {
     const snap = await getDoc(doc(db, 'ads', adId));
@@ -1457,6 +1490,7 @@ export async function adminCreateHeroPromotion(
     sort_order: number;
   }
 ): Promise<void> {
+  invalidateApprovedAdsCache();
   let linkedAd: Ad | null = null;
   if (payload.ad_id) {
     linkedAd = await fetchAdById(payload.ad_id, actor.id);
@@ -1522,6 +1556,7 @@ export async function adminUpdateHeroPromotion(
   promoId: string,
   status: 'active' | 'paused' | 'rejected'
 ): Promise<void> {
+  invalidateApprovedAdsCache();
   const path = `heroPromotions/${promoId}`;
   try {
     const snap = await getDoc(doc(db, 'heroPromotions', promoId));
@@ -1577,6 +1612,7 @@ export async function adminUpdateHeroPromotion(
 }
 
 export async function adminDeleteHeroPromotion(actor: User, promoId: string): Promise<void> {
+  invalidateApprovedAdsCache();
   const path = `heroPromotions/${promoId}`;
   try {
     await deleteDoc(doc(db, 'heroPromotions', promoId));
@@ -1947,6 +1983,7 @@ export async function adminToggleSubcategory(
 }
 
 export async function adminClearSampleAds(actor: User): Promise<number> {
+  invalidateApprovedAdsCache();
   try {
     const [adsSnap, heroSnap] = await Promise.all([
       getDocs(query(collection(db, 'ads'), where('isSample', '==', true))),
