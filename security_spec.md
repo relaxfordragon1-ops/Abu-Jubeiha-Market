@@ -22,3 +22,6 @@
 10. **Self-Activating Paid Hero Banner**: Creating `/heroPromotions/hp1` with `status: 'active'` as a non-staff user.
 11. **Snooping Someone Else's Messages**: Querying `/messages` without filtering to `senderId == uid` or `receiverId == uid`.
 12. **Resource Exhaustion / ID Poisoning**: Creating `/ads/<200-char-invalid-id>` or a `title` > 160 chars or `images` > 6 items.
+13. **Fake Verified Badge**: Creating `/ads/<id>` with `ownerVerified: true` while the seller's `/users` profile has `isVerifiedAccount == false`.
+14. **System Notification Spoofing**: Creating `/notifications/<id>` for another user with a title that does not start with `رسالة جديدة من`, or with `linkPage` other than `messages`, or `linkUserId` different from the caller.
+15. **Anonymous User Enumeration**: Listing `/users` without signing in.
