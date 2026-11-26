@@ -1,4 +1,4 @@
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { getDownloadURL, ref, uploadBytesResumable } from 'firebase/storage';
 import { auth, storage } from './firebase';
 
 async function compressImageFile(file: File): Promise<File> {
@@ -74,16 +74,35 @@ async function uploadToFirebaseStorage(file: File, uid: string): Promise<string>
   const rand = Math.random().toString(36).slice(2, 10);
   const storageRef = ref(storage, `marketplace/${uid}/${Date.now()}-${rand}.${ext}`);
 
-  const uploadPromise = uploadBytes(storageRef, file, {
+  const task = uploadBytesResumable(storageRef, file, {
     contentType: file.type || 'image/jpeg',
     cacheControl: 'public, max-age=31536000',
-  }).then((snap) => getDownloadURL(snap.ref));
+  });
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('storage-timeout')), 6000)
-  );
-
-  return Promise.race([uploadPromise, timeoutPromise]);
+  // 20s budget (slow mobile networks); the upload is cancelled on timeout so the
+  // server fallback never creates a duplicate copy of the same image.
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      task.cancel();
+      reject(new Error('storage-timeout'));
+    }, 20000);
+    task.on(
+      'state_changed',
+      undefined,
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+      async () => {
+        clearTimeout(timer);
+        try {
+          resolve(await getDownloadURL(task.snapshot.ref));
+        } catch (err) {
+          reject(err);
+        }
+      }
+    );
+  });
 }
 
 export async function uploadImages(files: FileList | File[]): Promise<string[]> {
