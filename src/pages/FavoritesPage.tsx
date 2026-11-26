@@ -11,7 +11,7 @@ interface FavoritesPageProps {
 }
 
 export function FavoritesPage({ onNavigate, onFavoriteChanged }: FavoritesPageProps) {
-  const { user, refreshMe } = useAuth();
+  const { user, loading: authLoading, refreshMe } = useAuth();
   const [ads, setAds] = useState<Ad[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -31,6 +31,15 @@ export function FavoritesPage({ onNavigate, onFavoriteChanged }: FavoritesPagePr
   useEffect(() => {
     loadFavorites();
   }, [loadFavorites]);
+
+  if (authLoading && !user) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-16 text-center space-y-3">
+        <div className="w-8 h-8 border-2 border-teal-700 border-t-transparent rounded-full animate-spin mx-auto" />
+        <p className="text-sm font-medium text-stone-600">جاري استعادة جلسة الدخول...</p>
+      </div>
+    );
+  }
 
   if (!user) {
     return (

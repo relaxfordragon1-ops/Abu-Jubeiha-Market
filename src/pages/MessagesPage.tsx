@@ -20,7 +20,7 @@ export function MessagesPage({
   initialAdId = null,
   onNavigate,
 }: MessagesPageProps) {
-  const { user, refreshMe } = useAuth();
+  const { user, loading: authLoading, refreshMe } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(
     initialWithUserId ?? null
@@ -81,6 +81,15 @@ export function MessagesPage({
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
+
+  if (authLoading && !user) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-16 text-center space-y-3">
+        <div className="w-8 h-8 border-2 border-teal-700 border-t-transparent rounded-full animate-spin mx-auto" />
+        <p className="text-sm font-medium text-stone-600">جاري استعادة جلسة الدخول...</p>
+      </div>
+    );
+  }
 
   if (!user) {
     return (

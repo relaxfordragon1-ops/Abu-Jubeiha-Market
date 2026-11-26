@@ -22,6 +22,7 @@ interface NavbarProps {
 export function Navbar({ route, onNavigate }: NavbarProps) {
   const {
     user,
+    loading: authLoading,
     stats,
     notifications,
     markNotificationAsRead,
@@ -143,7 +144,7 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
                 }
                 className={`${navLinkClass(route.page === 'account' || route.page === 'auth')} cursor-pointer`}
               >
-                {user ? 'حسابي' : 'تسجيل الدخول'}
+                {user ? 'حسابي' : authLoading ? '...' : 'تسجيل الدخول'}
               </button>
             )}
           </nav>

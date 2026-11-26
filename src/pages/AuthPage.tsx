@@ -11,6 +11,8 @@ interface AuthPageProps {
 
 export function AuthPage({ initialMode = 'login', onNavigate }: AuthPageProps) {
   const {
+    user,
+    loading: authLoading,
     loginWithGoogle,
     loginWithEmail,
     registerWithEmail,
@@ -51,6 +53,12 @@ export function AuthPage({ initialMode = 'login', onNavigate }: AuthPageProps) {
       onNavigate({ page: 'home' });
     }
   };
+
+  useEffect(() => {
+    if (!authLoading && user) {
+      routeAfterAuth(user.role);
+    }
+  }, [authLoading, user]);
 
   const handleGoogleSignIn = async () => {
     clearFeedback();

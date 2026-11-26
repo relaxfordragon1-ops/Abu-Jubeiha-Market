@@ -12,6 +12,8 @@ import {
   updateDoc,
   where,
   writeBatch,
+  type DocumentData,
+  type QuerySnapshot,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import {
@@ -398,14 +400,14 @@ export async function seedSampleListingsInFirestore(
 const APPROVED_ADS_TTL_MS = 15_000;
 let approvedAdsCache: {
   at: number;
-  promise: Promise<Awaited<ReturnType<typeof getDocs>>>;
+  promise: Promise<QuerySnapshot<DocumentData>>;
 } | null = null;
 
 export function invalidateApprovedAdsCache(): void {
   approvedAdsCache = null;
 }
 
-function getApprovedAdsSnapshot(): Promise<Awaited<ReturnType<typeof getDocs>>> {
+function getApprovedAdsSnapshot(): Promise<QuerySnapshot<DocumentData>> {
   const now = Date.now();
   if (approvedAdsCache && now - approvedAdsCache.at < APPROVED_ADS_TTL_MS) {
     return approvedAdsCache.promise;

@@ -24,7 +24,7 @@ import { AdminDashboardPage } from './pages/AdminDashboardPage';
 import type { Ad, AppRoute, Category, HeroPromotion } from './types';
 
 function MarketplaceApp() {
-  const { user, refreshMe, authSyncError } = useAuth();
+  const { user, refreshMe, authSyncError, emailNotVerified, pendingEmail } = useAuth();
   const [route, setRoute] = useState<AppRoute>(() => urlToRoute());
   const [categories, setCategories] = useState<Category[]>([]);
   const [ads, setAds] = useState<Ad[]>([]);
@@ -102,6 +102,18 @@ function MarketplaceApp() {
             className="mr-2 underline font-bold"
           >
             إعادة المحاولة
+          </button>
+        </div>
+      )}
+      {emailNotVerified && route.page !== 'auth' && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-xs text-amber-950 text-center" dir="rtl">
+          حسابك ({pendingEmail}) بانتظار تأكيد البريد الإلكتروني لإكمال تسجيل الدخول.
+          <button
+            type="button"
+            onClick={() => navigate({ page: 'auth', mode: 'login' })}
+            className="mr-2 underline font-bold cursor-pointer"
+          >
+            إكمال التحقق
           </button>
         </div>
       )}

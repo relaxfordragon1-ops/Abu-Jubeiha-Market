@@ -1,11 +1,15 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import {
+  browserLocalPersistence,
   createUserWithEmailAndPassword,
   EmailAuthProvider,
+  getRedirectResult,
+  indexedDBLocalPersistence,
   onAuthStateChanged,
   reauthenticateWithCredential,
   sendEmailVerification,
   sendPasswordResetEmail,
+  setPersistence,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
@@ -46,12 +50,88 @@ interface UserStats {
 }
 
 interface PendingSignupProfile {
+  email?: string;
   name: string;
   phone: string;
   location: string;
+  savedAt?: number;
 }
 
 const PENDING_PROFILE_KEY = 'abu_jubeiha_pending_profile';
+const CACHED_USER_KEY = 'abu_jubeiha_cached_user_v1';
+
+function readCachedUser(): User | null {
+  try {
+    const raw = window.localStorage.getItem(CACHED_USER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as User;
+    if (parsed && typeof parsed.id === 'string' && parsed.id.trim()) {
+      return parsed;
+    }
+  } catch {
+    // ignore storage read errors
+  }
+  return null;
+}
+
+function writeCachedUser(user: User): void {
+  try {
+    window.localStorage.setItem(CACHED_USER_KEY, JSON.stringify(user));
+  } catch {
+    // ignore storage quota/privacy errors
+  }
+}
+
+function clearCachedUser(): void {
+  try {
+    window.localStorage.removeItem(CACHED_USER_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function readPendingProfile(emailLower: string): PendingSignupProfile | null {
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    try {
+      const raw = storage.getItem(PENDING_PROFILE_KEY);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as PendingSignupProfile;
+      if (parsed && (!parsed.email || parsed.email.toLowerCase() === emailLower)) {
+        return parsed;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+function writePendingProfile(profile: PendingSignupProfile): void {
+  const payload = JSON.stringify({ ...profile, savedAt: Date.now() });
+  try {
+    window.localStorage.setItem(PENDING_PROFILE_KEY, payload);
+  } catch {
+    // ignore
+  }
+  try {
+    window.sessionStorage.setItem(PENDING_PROFILE_KEY, payload);
+  } catch {
+    // ignore
+  }
+}
+
+function clearPendingProfile(): void {
+  try {
+    window.localStorage.removeItem(PENDING_PROFILE_KEY);
+  } catch {
+    // ignore
+  }
+  try {
+    window.sessionStorage.removeItem(PENDING_PROFILE_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 function toIso(val: unknown): string {
   if (!val) return new Date().toISOString();
@@ -81,7 +161,7 @@ export function mapFirebaseAuthError(err: any): string {
     case 'auth/cancelled-popup-request':
       return 'تم إغلاق نافذة تسجيل الدخول بحساب Google قبل إتمام العملية';
     case 'auth/popup-blocked':
-      return 'تم حظر النافذة المنبثقة من المتصفح. يرجى السماح بالنوافذ المنبثقة ثم المحاولة مجدداً';
+      return 'تم حظر النافذة المنبقة من المتصفح. يرجى السماح بالنوافذ المنبقة ثم المحاولة مجدداً';
     case 'auth/too-many-requests':
       return 'تم تنفيذ محاولات كثيرة متتالية. يرجى الانتظار قليلاً ثم المحاولة مرة أخرى';
     case 'auth/requires-recent-login':
@@ -128,7 +208,7 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(() => readCachedUser());
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [stats, setStats] = useState<UserStats>({
     unreadMessages: 0,
@@ -140,6 +220,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [emailNotVerified, setEmailNotVerified] = useState<boolean>(false);
   const [pendingEmail, setPendingEmail] = useState<string>('');
   const [authSyncError, setAuthSyncError] = useState<string>('');
+  const syncSeqRef = useRef<number>(0);
+
+  const ensureLocalPersistence = useCallback(async () => {
+    try {
+      await setPersistence(auth, indexedDBLocalPersistence);
+    } catch {
+      try {
+        await setPersistence(auth, browserLocalPersistence);
+      } catch {
+        // ignore if unsupported in current context
+      }
+    }
+  }, []);
 
   const loadStatsForUid = useCallback(async (uid: string) => {
     try {
@@ -161,14 +254,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const syncVerifiedUser = useCallback(
     async (fbUser: FirebaseUser): Promise<User> => {
-      const emailLower = (fbUser.email || '').trim().toLowerCase();
+      const rawEmail = (fbUser.email || '').trim();
+      const emailLower = rawEmail.toLowerCase();
       let designatedRole: UserRole | null = BOOTSTRAP_ADMIN_EMAILS.includes(emailLower)
         ? 'admin'
         : null;
 
       if (!designatedRole && emailLower) {
         try {
-          const staffSnap = await getDoc(doc(db, 'designatedStaff', emailLower));
+          let staffSnap = await getDoc(doc(db, 'designatedStaff', emailLower));
+          if (!staffSnap.exists() && rawEmail && rawEmail !== emailLower) {
+            staffSnap = await getDoc(doc(db, 'designatedStaff', rawEmail));
+          }
           if (staffSnap.exists()) {
             designatedRole =
               staffSnap.data().role === 'moderator' ? 'moderator' : 'admin';
@@ -179,6 +276,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Ensure role marker document exists before creating/updating /users/{uid}
+      // Use exact fbUser.email when available so it matches request.auth.token.email in Firestore rules.
+      const tokenEmail = rawEmail || emailLower;
       if (designatedRole === 'admin') {
         const adminRef = doc(db, 'admins', fbUser.uid);
         try {
@@ -186,7 +285,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (!adminSnap.exists()) {
             await setDoc(adminRef, {
               uid: fbUser.uid,
-              email: emailLower,
+              email: tokenEmail,
               createdAt: serverTimestamp(),
             });
           }
@@ -200,7 +299,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (!modSnap.exists()) {
             await setDoc(modRef, {
               uid: fbUser.uid,
-              email: emailLower,
+              email: tokenEmail,
               createdAt: serverTimestamp(),
             });
           }
@@ -210,15 +309,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Check pending profile info saved during email/password registration
-      let pendingProfile: PendingSignupProfile | null = null;
-      try {
-        const raw = sessionStorage.getItem(PENDING_PROFILE_KEY);
-        if (raw) {
-          pendingProfile = JSON.parse(raw) as PendingSignupProfile;
-        }
-      } catch {
-        // ignore storage errors
-      }
+      const pendingProfile = readPendingProfile(emailLower);
 
       const userRef = doc(db, 'users', fbUser.uid);
       const privRef = doc(db, 'users', fbUser.uid, 'private', 'info');
@@ -313,14 +404,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (pendingProfile) {
-        try {
-          sessionStorage.removeItem(PENDING_PROFILE_KEY);
-        } catch {
-          // ignore
-        }
+        clearPendingProfile();
       }
 
       if (isBlocked) {
+        clearCachedUser();
         await signOut(auth);
         throw new Error('تم حظر هذا الحساب لمخالفة سياسات سوق أبو جبيهة');
       }
@@ -338,43 +426,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         created_at: createdAtIso,
       };
 
-      // Bootstrap default categories & initial sample ads only on first-ever admin setup
+      // Cache and publish user immediately before non-blocking background seeding/stats
+      writeCachedUser(appUser);
+      setUser(appUser);
+
       if (finalRole === 'admin') {
-        try {
-          const catSnap = await getDocs(collection(db, 'categories'));
-          if (catSnap.empty) {
-            await seedDefaultCategoriesIfEmpty();
-            await seedSampleListingsInFirestore(appUser.id, appUser.name);
+        void (async () => {
+          try {
+            const catSnap = await getDocs(collection(db, 'categories'));
+            if (catSnap.empty) {
+              await seedDefaultCategoriesIfEmpty();
+              await seedSampleListingsInFirestore(appUser.id, appUser.name);
+            }
+          } catch {
+            // ignore if seeding not needed
           }
-        } catch {
-          // ignore if seeding not needed
-        }
+        })();
       }
 
-      setUser(appUser);
-      await loadStatsForUid(fbUser.uid);
+      void loadStatsForUid(fbUser.uid);
       return appUser;
     },
     [loadStatsForUid]
   );
 
   useEffect(() => {
+    void ensureLocalPersistence();
+    void getRedirectResult(auth).catch(() => {});
+
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
+      const seq = ++syncSeqRef.current;
+
       if (!fbUser) {
+        clearCachedUser();
         setUser(null);
         setNotifications([]);
         setEmailNotVerified(false);
         setPendingEmail('');
+        setAuthSyncError('');
         setStats({ unreadMessages: 0, unreadNotifications: 0, favoritesCount: 0, myAdsCount: 0 });
         setLoading(false);
         return;
       }
 
       if (!fbUser.emailVerified) {
+        clearCachedUser();
         setUser(null);
         setNotifications([]);
         setEmailNotVerified(true);
         setPendingEmail(fbUser.email || '');
+        setAuthSyncError('');
         setLoading(false);
         return;
       }
@@ -383,39 +484,61 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setPendingEmail('');
       setAuthSyncError('');
 
-      // A page reload must not look like a logout because of a transient/network failure:
-      // retry the profile sync a few times and surface the real error if it keeps failing.
+      // Hydrate immediately from matching cached user so page reloads never look logged out
+      const cached = readCachedUser();
+      if (cached && cached.id === fbUser.uid) {
+        setUser(cached);
+        setLoading(false);
+      }
+
+      // Refresh profile from Firestore with retries; if transient failure occurs while fbUser is still active,
+      // preserve the matching cached user rather than forcing a false logout.
       let lastErr: unknown = null;
       for (let attempt = 0; attempt < 3; attempt++) {
+        if (seq !== syncSeqRef.current) return;
         try {
           await syncVerifiedUser(fbUser);
+          if (seq !== syncSeqRef.current) return;
           lastErr = null;
           break;
         } catch (err) {
           lastErr = err;
           console.error('syncVerifiedUser failed (attempt ' + (attempt + 1) + ')', err);
-          if (!auth.currentUser) break;
+          if (!auth.currentUser || seq !== syncSeqRef.current) break;
           await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
         }
       }
+
+      if (seq !== syncSeqRef.current) return;
+
       if (lastErr) {
-        setUser(null);
-        if (auth.currentUser) {
-          let msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-          try {
-            const parsed = JSON.parse(msg) as { error?: string; path?: string | null };
-            msg = `${parsed.error || msg}${parsed.path ? ` (${parsed.path})` : ''}`;
-          } catch {
-            // not a JSON error message
+        const stillSameUser = auth.currentUser?.uid === fbUser.uid;
+        const fallbackCached = stillSameUser ? readCachedUser() : null;
+        if (fallbackCached && fallbackCached.id === fbUser.uid) {
+          setUser(fallbackCached);
+          void loadStatsForUid(fbUser.uid);
+        } else {
+          setUser(null);
+          if (stillSameUser) {
+            let msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+            try {
+              const parsed = JSON.parse(msg) as { error?: string; path?: string | null };
+              msg = `${parsed.error || msg}${parsed.path ? ` (${parsed.path})` : ''}`;
+            } catch {
+              // not a JSON error message
+            }
+            setAuthSyncError(msg.slice(0, 300));
           }
-          setAuthSyncError(msg.slice(0, 300));
         }
       }
       setLoading(false);
     });
 
-    return () => unsub();
-  }, [syncVerifiedUser]);
+    return () => {
+      syncSeqRef.current += 1;
+      unsub();
+    };
+  }, [ensureLocalPersistence, loadStatsForUid, syncVerifiedUser]);
 
   // Attach real-time Firestore listeners only when auth is ready and user is authenticated
   useEffect(() => {
@@ -423,17 +546,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setNotifications([]);
       return;
     }
-
     const unsubMsgs = subscribeToUserMessages(user.id, ({ unreadCount }) => {
       setStats((prev) => ({ ...prev, unreadMessages: unreadCount }));
     });
-
     const unsubNotifs = subscribeToNotifications(user.id, (list) => {
       setNotifications(list);
       const unreadNotifications = list.filter((n) => !n.is_read).length;
       setStats((prev) => ({ ...prev, unreadNotifications }));
     });
-
     return () => {
       unsubMsgs();
       unsubNotifs();
@@ -448,9 +568,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loginWithGoogle = async (): Promise<User> => {
     try {
+      await ensureLocalPersistence();
       const cred = await signInWithPopup(auth, googleAuthProvider);
       setEmailNotVerified(false);
       setPendingEmail('');
+      setAuthSyncError('');
       return await syncVerifiedUser(cred.user);
     } catch (err) {
       throw new Error(mapFirebaseAuthError(err));
@@ -459,6 +581,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loginWithEmail = async (email: string, password: string): Promise<User> => {
     try {
+      await ensureLocalPersistence();
       const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
       if (!cred.user.emailVerified) {
         setEmailNotVerified(true);
@@ -469,6 +592,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       setEmailNotVerified(false);
       setPendingEmail('');
+      setAuthSyncError('');
       return await syncVerifiedUser(cred.user);
     } catch (err: any) {
       if (err instanceof Error && !('code' in err)) throw err;
@@ -484,34 +608,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     location: string;
   }): Promise<{ needsVerification: boolean; user?: User }> => {
     try {
+      await ensureLocalPersistence();
+      const cleanEmail = payload.email.trim();
       const cred = await createUserWithEmailAndPassword(
         auth,
-        payload.email.trim(),
+        cleanEmail,
         payload.password
       );
       await updateFirebaseAuthProfile(cred.user, {
         displayName: payload.name.trim(),
       });
-      try {
-        sessionStorage.setItem(
-          PENDING_PROFILE_KEY,
-          JSON.stringify({
-            name: payload.name.trim(),
-            phone: payload.phone.trim(),
-            location: payload.location.trim(),
-          })
-        );
-      } catch {
-        // ignore storage errors
-      }
-
+      writePendingProfile({
+        email: cleanEmail.toLowerCase(),
+        name: payload.name.trim(),
+        phone: payload.phone.trim(),
+        location: payload.location.trim(),
+      });
       if (!cred.user.emailVerified) {
         await sendEmailVerification(cred.user);
         setEmailNotVerified(true);
-        setPendingEmail(cred.user.email || payload.email.trim());
+        setPendingEmail(cred.user.email || cleanEmail);
         return { needsVerification: true };
       }
-
       const appUser = await syncVerifiedUser(cred.user);
       return { needsVerification: false, user: appUser };
     } catch (err) {
@@ -542,6 +660,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (auth.currentUser.emailVerified) {
       setEmailNotVerified(false);
       setPendingEmail('');
+      setAuthSyncError('');
       return await syncVerifiedUser(auth.currentUser);
     }
     return null;
@@ -621,11 +740,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
+    clearCachedUser();
+    clearPendingProfile();
     await signOut(auth);
     setUser(null);
     setNotifications([]);
     setEmailNotVerified(false);
     setPendingEmail('');
+    setAuthSyncError('');
     setStats({ unreadMessages: 0, unreadNotifications: 0, favoritesCount: 0, myAdsCount: 0 });
   };
 
