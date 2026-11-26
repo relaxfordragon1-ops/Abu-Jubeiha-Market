@@ -1,13 +1,15 @@
 import { getDownloadURL, ref, uploadBytesResumable } from 'firebase/storage';
 import { auth, storage } from './firebase';
 
-async function compressImageFile(file: File): Promise<File> {
+type ImageProcessOptions = { aspect?: number; maxDim?: number; force?: boolean };
+
+async function compressImageFile(file: File, opts: ImageProcessOptions = {}): Promise<File> {
   if (!file.type.startsWith('image/') || file.type === 'image/gif') {
     return file;
   }
 
   // Skip tiny images already under 140KB
-  if (file.size <= 140 * 1024) {
+  if (!opts.force && !opts.aspect && file.size <= 140 * 1024) {
     return file;
   }
 
@@ -17,8 +19,23 @@ async function compressImageFile(file: File): Promise<File> {
 
     img.onload = () => {
       try {
-        const MAX_DIM = 1280;
-        let { width, height } = img;
+        const MAX_DIM = opts.maxDim || 1280;
+        // Optional centered crop to a fixed aspect ratio (used for paid banner images)
+        let sx = 0;
+        let sy = 0;
+        let sw = img.width;
+        let sh = img.height;
+        if (opts.aspect) {
+          if (sw / sh > opts.aspect) {
+            sw = Math.round(sh * opts.aspect);
+            sx = Math.round((img.width - sw) / 2);
+          } else {
+            sh = Math.round(sw / opts.aspect);
+            sy = Math.round((img.height - sh) / 2);
+          }
+        }
+        let width = sw;
+        let height = sh;
         if (width > MAX_DIM || height > MAX_DIM) {
           if (width >= height) {
             height = Math.round((height * MAX_DIM) / width);
@@ -38,13 +55,13 @@ async function compressImageFile(file: File): Promise<File> {
           resolve(file);
           return;
         }
-        ctx.drawImage(img, 0, 0, width, height);
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
 
         const targetMime = 'image/webp';
         canvas.toBlob(
           (blob) => {
             URL.revokeObjectURL(objectUrl);
-            if (!blob || blob.size >= file.size) {
+            if (!blob || (!opts.aspect && blob.size >= file.size)) {
               resolve(file);
               return;
             }
@@ -105,11 +122,14 @@ async function uploadToFirebaseStorage(file: File, uid: string): Promise<string>
   });
 }
 
-export async function uploadImages(files: FileList | File[]): Promise<string[]> {
+export async function uploadImages(
+  files: FileList | File[],
+  options: ImageProcessOptions = {}
+): Promise<string[]> {
   const rawList = Array.from(files).slice(0, 6);
   if (rawList.length === 0) return [];
 
-  const compressedFiles = await Promise.all(rawList.map((f) => compressImageFile(f)));
+  const compressedFiles = await Promise.all(rawList.map((f) => compressImageFile(f, options)));
   const uid = auth.currentUser?.uid;
 
   // Attempt Firebase Cloud Storage first so images persist across deployments
@@ -242,3 +262,6 @@ export const ABU_JUBEIHA_AREAS = [
   'أبو جبيهة - موقف السيارات',
   'القرى والمناطق المجاورة',
 ];
+
+// Paid hero banner images: centered 4:3 crop, max 1200px wide, always re-encoded to WebP
+export const BANNER_IMAGE_OPTIONS: ImageProcessOptions = { aspect: 4 / 3, maxDim: 1200, force: true };
