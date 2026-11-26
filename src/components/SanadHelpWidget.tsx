@@ -7,6 +7,7 @@ interface HelpMessage {
   role: 'user' | 'assistant';
   content: string;
   escalated?: boolean;
+  escalationFailed?: boolean;
 }
 
 interface SanadHelpWidgetProps {
@@ -128,6 +129,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
         reply?: string;
         answer?: string;
         escalated?: boolean;
+        escalationFailed?: boolean;
         detail?: string;
         error?: string;
       } | null;
@@ -147,6 +149,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
           role: 'assistant',
           content: answer || 'أهلاً بك! كيف أقدر أساعدك في سوق أبو جبيهة؟',
           escalated: Boolean(data?.escalated),
+          escalationFailed: Boolean(data?.escalationFailed),
         },
       ]);
     } catch {
@@ -235,6 +238,11 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
                     <span className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
                       <CheckCircle2 className="w-3 h-3" />
                       تم تحويل استفسارك إلى إدارة السوق للمتابعة
+                    </span>
+                  )}
+                  {msg.escalationFailed && (
+                    <span className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-amber-700">
+                      تعذر تحويل استفسارك للإدارة حالياً، يرجى التواصل مع الإدارة مباشرة.
                     </span>
                   )}
                 </div>
