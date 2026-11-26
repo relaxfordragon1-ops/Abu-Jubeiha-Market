@@ -10,6 +10,7 @@ import {
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { SanadHelpWidget } from './components/SanadHelpWidget';
 import { getRouteTitle, routeToUrl, urlToRoute } from './lib/routing';
 import { HomePage } from './pages/HomePage';
 import { SearchPage } from './pages/SearchPage';
@@ -182,6 +183,7 @@ function MarketplaceApp() {
       </main>
 
       <Footer onNavigate={navigate} />
+      <SanadHelpWidget route={route} onNavigate={navigate} />
       <OfflineIndicator />
     </div>
   );

@@ -576,6 +576,36 @@ export async function fetchAdById(adId: string, currentUid?: string): Promise<Ad
   }
 }
 
+async function notifySanadWebhook(payload: {
+  event: "new_ad" | "new_hero" | "new_report";
+  id?: string;
+  title?: string;
+  category?: string;
+  price?: number;
+  owner_name?: string;
+  ad_type?: string;
+  reason?: string;
+  image_url?: string;
+  receipt_url?: string;
+  contact?: string;
+  message?: string;
+}): Promise<void> {
+  try {
+    const token = await auth.currentUser?.getIdToken().catch(() => null);
+    if (!token) return;
+    await fetch("/api/sanad/notify", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // non-blocking webhook notification
+  }
+}
+
 export async function createAd(
   user: User,
   categories: Category[],
@@ -643,6 +673,19 @@ export async function createAd(
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    if (!isStaff) {
+      void notifySanadWebhook({
+        event: "new_ad",
+        id,
+        title: clampStr(payload.title, 160),
+        category: clampStr(cat.name_ar, 100),
+        price: Math.max(0, Number(payload.price) || 0),
+        owner_name: clampStr(user.name, 80),
+        ad_type: payload.ad_type,
+        image_url: (payload.images || [])[0] || undefined,
+        contact: clampStr(payload.contact_phone, 40) || undefined,
+      });
+    }
     return {
       id,
       message: isStaff
@@ -706,6 +749,19 @@ export async function updateAd(
       status: isStaff ? 'approved' : 'pending',
       updatedAt: serverTimestamp(),
     });
+    if (!isStaff) {
+      void notifySanadWebhook({
+        event: "new_ad",
+        id: adId,
+        title: clampStr(payload.title, 160),
+        category: clampStr(cat.name_ar, 100),
+        price: Math.max(0, Number(payload.price) || 0),
+        owner_name: clampStr(user.name, 80),
+        ad_type: payload.ad_type,
+        image_url: (payload.images || [])[0] || undefined,
+        contact: clampStr(payload.contact_phone, 40) || undefined,
+      });
+    }
     return {
       message: isStaff
         ? 'تم حفظ تعديلات الإعلان'
@@ -817,6 +873,17 @@ export async function createHeroPromotionRequest(
       adminNote: '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+    });
+    void notifySanadWebhook({
+      event: "new_hero",
+      id,
+      title: clampStr(ad.title, 160),
+      price: amount,
+      owner_name: clampStr(user.name, 80),
+      image_url: imageUrl,
+      receipt_url: payload.payment_receipt_url || undefined,
+      contact: payload.payment_method,
+      message: `الباقة: ${payload.package_days} يوم | المرجع: ${payload.payment_reference}`,
     });
     return 'تم إرسال طلب الإعلان المميز المدفوع بنجاح، وسيتم تفعيله في الواجهة فور مراجعة الدفع';
   } catch (err) {
@@ -1227,6 +1294,14 @@ export async function submitReport(
       adminNote: '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+    });
+    void notifySanadWebhook({
+      event: "new_report",
+      id,
+      title: clampStr(payload.target_ad_title || payload.target_user_name || "بلاغ جديد", 160),
+      owner_name: clampStr(reporter.name, 80),
+      reason: clampStr(payload.reason, 160),
+      message: clampStr(payload.details, 500),
     });
     return 'تم استلام بلاغك وسيقوم فريق الرقابة بمراجعته قريباً';
   } catch (err) {

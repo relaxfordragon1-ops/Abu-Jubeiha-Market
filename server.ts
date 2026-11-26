@@ -5,9 +5,10 @@ import fs from 'fs';
 import crypto from 'crypto';
 import multer from 'multer';
 import firebaseConfig from './firebase-applet-config.json';
+import { registerSanadBridgeRoutes } from './server/sanadBridge';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) {
@@ -72,18 +73,17 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-async function requireFirebaseUploadAuth(req: Request, res: Response, next: express.NextFunction) {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'يرجى تسجيل الدخول لرفع الصور' });
-    return;
-  }
-  const idToken = header.slice('Bearer '.length).trim();
+async function verifyFirebaseIdToken(idToken: string): Promise<{
+  ok: boolean;
+  localId?: string;
+  email?: string;
+  disabled?: boolean;
+  status?: number;
+  error?: string;
+}> {
   if (!idToken) {
-    res.status(401).json({ error: 'رمز الجلسة مفقود' });
-    return;
+    return { ok: false, status: 401, error: 'رمز الجلسة مفقود' };
   }
-
   try {
     const verifyRes = await fetch(
       `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseConfig.apiKey)}`,
@@ -94,21 +94,39 @@ async function requireFirebaseUploadAuth(req: Request, res: Response, next: expr
       }
     );
     if (!verifyRes.ok) {
-      res.status(401).json({ error: 'جلسة الدخول غير صالحة، يرجى إعادة تسجيل الدخول' });
-      return;
+      return { ok: false, status: 401, error: 'جلسة الدخول غير صالحة، يرجى إعادة تسجيل الدخول' };
     }
     const payload = (await verifyRes.json()) as {
-      users?: Array<{ localId?: string; disabled?: boolean }>;
+      users?: Array<{ localId?: string; email?: string; disabled?: boolean }>;
     };
     const account = payload.users?.[0];
     if (!account?.localId || account.disabled) {
-      res.status(403).json({ error: 'الحساب غير مصرح له برفع الملفات' });
-      return;
+      return { ok: false, status: 403, error: 'الحساب غير مصرح له بهذا الإجراء' };
     }
-    next();
+    return {
+      ok: true,
+      localId: account.localId,
+      email: account.email,
+      disabled: account.disabled,
+    };
   } catch {
-    res.status(500).json({ error: 'تعذر التحقق من جلسة الرفع حالياً' });
+    return { ok: false, status: 500, error: 'تعذر التحقق من جلسة المستخدم حالياً' };
   }
+}
+
+async function requireFirebaseUploadAuth(req: Request, res: Response, next: express.NextFunction) {
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'يرجى تسجيل الدخول لرفع الصور' });
+    return;
+  }
+  const idToken = header.slice('Bearer '.length).trim();
+  const result = await verifyFirebaseIdToken(idToken);
+  if (!result.ok) {
+    res.status(result.status || 401).json({ error: result.error || 'جلسة غير صالحة' });
+    return;
+  }
+  next();
 }
 
 app.post('/api/upload', requireFirebaseUploadAuth, (req: Request, res: Response) => {
@@ -126,6 +144,9 @@ app.post('/api/upload', requireFirebaseUploadAuth, (req: Request, res: Response)
     res.status(201).json({ urls });
   });
 });
+
+// Mount Sanad Admin Bridge, Webhook Relay, Public Ad Search & Help Proxy
+registerSanadBridgeRoutes(app, verifyFirebaseIdToken);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'المسار المطلوب غير موجود' });
