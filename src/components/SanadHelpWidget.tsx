@@ -125,6 +125,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
         }),
       });
       const data = (await resp.json().catch(() => null)) as {
+        reply?: string;
         answer?: string;
         escalated?: boolean;
         detail?: string;
@@ -138,7 +139,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
         return;
       }
 
-      const answer = String(data?.answer || '').trim();
+      const answer = String(data?.reply ?? data?.answer ?? '').trim();
       setMessages((prev) => [
         ...prev,
         {
