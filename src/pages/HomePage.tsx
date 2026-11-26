@@ -52,21 +52,9 @@ export function HomePage({
         isPaidPromo: true,
       }));
     }
-    const featuredWithImg = ads.filter((a) => a.is_featured && a.images?.length > 0);
-    if (featuredWithImg.length > 0) {
-      return featuredWithImg.map((a) => ({
-        key: `ad-${a.id}`,
-        adId: a.id,
-        title: a.title,
-        subtitle: a.category_name,
-        imageUrl: a.images[0],
-        priceLabel: formatPriceSDG(a.price, a.ad_type),
-        locationLabel: a.location,
-        isPaidPromo: true,
-      }));
-    }
+    // The banner is reserved for paid promotions only (no free/featured fallback)
     return [];
-  }, [heroPromotions, ads]);
+  }, [heroPromotions]);
 
   useEffect(() => {
     setActiveHeroIdx(0);
@@ -194,6 +182,18 @@ export function HomePage({
                     <div className="absolute inset-0 bg-gradient-to-t from-stone-950/90 via-stone-950/35 to-stone-950/20" />
                   </motion.div>
                 </AnimatePresence>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    onNavigate(
+                      user ? { page: 'account', tab: 'my-ads' } : { page: 'auth', mode: 'login' }
+                    )
+                  }
+                  className="absolute top-3 left-3 z-30 px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-stone-950 text-xs font-extrabold shadow cursor-pointer"
+                >
+                  ميّز إعلانك
+                </button>
 
                 {/* 5-second progress bar */}
                 {heroSlides.length > 1 && (
