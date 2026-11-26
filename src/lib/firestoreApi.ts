@@ -869,6 +869,7 @@ export async function createHeroPromotionRequest(
     payment_method: string;
     payment_reference: string;
     payment_receipt_url?: string;
+    banner_url?: string;
   }
 ): Promise<string> {
   const amount = HERO_PACKAGES[payload.package_days] ?? 10000;
@@ -880,7 +881,8 @@ export async function createHeroPromotionRequest(
   const path = `heroPromotions/${id}`;
   const priceLabel =
     ad.price > 0 ? `${new Intl.NumberFormat('en-US').format(ad.price)} ج.س` : 'عرض مميز';
-  const imageUrl = ad.images?.[0] || '/src/assets/images/hero_abu_jubeiha_1795626053117.jpg';
+  const imageUrl =
+    payload.banner_url || ad.images?.[0] || '/src/assets/images/hero_abu_jubeiha_1795626053117.jpg';
 
   try {
     await setDoc(doc(db, 'heroPromotions', id), {
