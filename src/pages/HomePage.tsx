@@ -177,7 +177,14 @@ export function HomePage({
                       src={currentSlide.imageUrl}
                       alt={currentSlide.title}
                       referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        const img = e.currentTarget;
+                        if (!img.dataset.fallback) {
+                          img.dataset.fallback = '1';
+                          img.src = '/src/assets/images/hero_abu_jubeiha_1795626053117.jpg';
+                        }
+                      }}
+                      className="w-full h-full object-cover object-center"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-stone-950/90 via-stone-950/35 to-stone-950/20" />
                   </motion.div>
