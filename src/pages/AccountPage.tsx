@@ -28,6 +28,7 @@ import {
   updateAdStatus,
 } from '../lib/firestoreApi';
 import { useAuth } from '../context/AuthContext';
+import { PaymentAccountDetails } from '../components/PaymentAccountDetails';
 import type { Ad, AppRoute, HeroPromotion } from '../types';
 
 function AvatarImage({ src, alt }: { src: string; alt: string }) {
@@ -715,10 +716,11 @@ export function AccountPage({
                 >
                   <option value="بنكك">تطبيق بنكك (Bankak)</option>
                   <option value="فوري">فوري (Fawry)</option>
-                  <option value="أوكاش">أوكاش (O-Cash)</option>
+                  <option value="ماي كاشي">ماي كاشي (MyCashi)</option>
                   <option value="دفع مباشر للإدارة">دفع مباشر لإدارة السوق في أبو جبيهة</option>
                 </select>
               </div>
+              <PaymentAccountDetails method={promoPaymentMethod} />
               <div>
                 <label className="block text-xs font-semibold text-stone-700 mb-1.5">
                   رقم إشعار الدفع أو المرجع
