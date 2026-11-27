@@ -173,6 +173,21 @@ export function HomePage({
                     }
                     className={`absolute inset-0 ${currentSlide.adId ? 'cursor-pointer' : ''}`}
                   >
+                    {/* Blurred fill so any image shape looks complete inside the banner */}
+                    <img
+                      src={currentSlide.imageUrl}
+                      alt=""
+                      aria-hidden="true"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        const img = e.currentTarget;
+                        if (!img.dataset.fallback) {
+                          img.dataset.fallback = '1';
+                          img.src = '/src/assets/images/hero_abu_jubeiha_1795626053117.jpg';
+                        }
+                      }}
+                      className="absolute inset-0 w-full h-full object-cover scale-110 blur-2xl opacity-60"
+                    />
                     <img
                       src={currentSlide.imageUrl}
                       alt={currentSlide.title}
@@ -184,7 +199,7 @@ export function HomePage({
                           img.src = '/src/assets/images/hero_abu_jubeiha_1795626053117.jpg';
                         }
                       }}
-                      className="w-full h-full object-cover object-center"
+                      className="relative w-full h-full object-contain object-center"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-stone-950/90 via-stone-950/35 to-stone-950/20" />
                   </motion.div>
