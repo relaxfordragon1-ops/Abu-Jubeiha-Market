@@ -2,9 +2,9 @@ import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Upload, X, ArrowRight, CheckCircle2, Sparkles, Loader2 } from 'lucide-react';
 import { uploadImages, ABU_JUBEIHA_AREAS } from '../lib/api';
 import { auth } from '../lib/firebase';
-import { createAd, fetchAdById, updateAd } from '../lib/firestoreApi';
+import { createAd, createHeroPromotionRequest, fetchAdById, updateAd } from '../lib/firestoreApi';
 import { useAuth } from '../context/AuthContext';
-import type { AdType, AppRoute, Category } from '../types';
+import type { Ad, AdType, AppRoute, Category } from '../types';
 
 interface AdFormPageProps {
   categories: Category[];
@@ -40,6 +40,15 @@ export function AdFormPage({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  // Free / paid listing choice
+  const [listingMode, setListingMode] = useState<'free' | 'paid'>('free');
+  const [promoDays, setPromoDays] = useState<number>(7);
+  const [promoPaymentMethod, setPromoPaymentMethod] = useState('بنكك');
+  const [promoPaymentRef, setPromoPaymentRef] = useState('');
+  const [promoReceiptUrl, setPromoReceiptUrl] = useState('');
+  const [promoBannerUrl, setPromoBannerUrl] = useState('');
+  const [uploadingPromo, setUploadingPromo] = useState(false);
 
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiDrafting, setAiDrafting] = useState(false);
@@ -114,6 +123,41 @@ export function AdFormPage({
       setError(err.message || 'فشل رفع الصور');
     } finally {
       setUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handlePromoBannerUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    setError('');
+    setUploadingPromo(true);
+    try {
+      // Banner is auto-cropped to a 4:3 frame so any image size/shape fits the home banner
+      const urls = await uploadImages([e.target.files[0]], {
+        aspect: 4 / 3,
+        maxDim: 1280,
+        force: true,
+      });
+      if (urls[0]) setPromoBannerUrl(urls[0]);
+    } catch (err: any) {
+      setError(err.message || 'تعذر رفع صورة البنر');
+    } finally {
+      setUploadingPromo(false);
+      e.target.value = '';
+    }
+  };
+
+  const handlePromoReceiptUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    setError('');
+    setUploadingPromo(true);
+    try {
+      const urls = await uploadImages([e.target.files[0]]);
+      if (urls[0]) setPromoReceiptUrl(urls[0]);
+    } catch (err: any) {
+      setError(err.message || 'تعذر رفع صورة الإيصال');
+    } finally {
+      setUploadingPromo(false);
       e.target.value = '';
     }
   };
@@ -209,6 +253,12 @@ export function AdFormPage({
     e.preventDefault();
     setError('');
     setSuccessMsg('');
+
+    if (!isEditing && listingMode === 'paid' && promoPaymentRef.trim().length < 3) {
+      setError('يرجى إدخال رقم إشعار الدفع أو المرجع لإرسال طلب الإعلان المدفوع');
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -232,7 +282,32 @@ export function AdFormPage({
         setSuccessMsg(res.message);
       } else {
         const res = await createAd(user, categories, payload);
-        setSuccessMsg(res.message);
+        if (listingMode === 'paid') {
+          let promoNote = '';
+          try {
+            const adForPromo = {
+              id: res.id,
+              title: payload.title,
+              price: payload.price,
+              location: payload.location,
+              images: payload.images,
+            } as unknown as Ad;
+            promoNote = await createHeroPromotionRequest(user, adForPromo, {
+              package_days: promoDays,
+              payment_method: promoPaymentMethod,
+              payment_reference: promoPaymentRef.trim(),
+              payment_receipt_url: promoReceiptUrl || undefined,
+              banner_url: promoBannerUrl || undefined,
+            });
+          } catch (promoErr: any) {
+            promoNote = `لكن تعذر إرسال طلب الإعلان المدفوع (${
+              promoErr?.message || 'خطأ غير معروف'
+            }). يمكنك إعادة المحاولة من صفحة "إعلاناتي".`;
+          }
+          setSuccessMsg(`${res.message}. ${promoNote}`);
+        } else {
+          setSuccessMsg(res.message);
+        }
       }
       await refreshMe();
       onSaved();
@@ -365,6 +440,153 @@ export function AdFormPage({
                   )}
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Free / Paid listing choice */}
+          {!isEditing && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setListingMode('free')}
+                  className={`py-2.5 rounded-xl text-sm font-bold border transition-colors cursor-pointer ${
+                    listingMode === 'free'
+                      ? 'bg-teal-700 border-teal-700 text-white'
+                      : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-50'
+                  }`}
+                >
+                  إضافة إعلان مجاني
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setListingMode('paid')}
+                  className={`py-2.5 rounded-xl text-sm font-bold border transition-colors cursor-pointer ${
+                    listingMode === 'paid'
+                      ? 'bg-amber-400 border-amber-400 text-stone-950'
+                      : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-50'
+                  }`}
+                >
+                  إضافة إعلان مدفوع
+                </button>
+              </div>
+
+              {listingMode === 'paid' && (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 sm:p-5 space-y-4">
+                  <p className="text-xs text-stone-700 leading-relaxed">
+                    يظهر إعلانك في البنر الرئيسي بالتناوب التلقائي كل 5 ثوانٍ مع علامة «إعلان مميز مدفوع»،
+                    ويُفعَّل بعد مراجعة الدفع.
+                  </p>
+
+                  <div>
+                    <label className="block text-xs font-bold text-stone-800 mb-1.5">
+                      اختر الباقة
+                    </label>
+                    <select
+                      value={promoDays}
+                      onChange={(e) => setPromoDays(Number(e.target.value))}
+                      className="w-full px-3 py-2.5 bg-white border border-stone-200 rounded-xl text-sm"
+                    >
+                      <option value={3}>3 أيام — 5,000 ج.س</option>
+                      <option value={7}>7 أيام — 10,000 ج.س</option>
+                      <option value={14}>14 يوم — 18,000 ج.س</option>
+                      <option value={30}>30 يوم — 30,000 ج.س</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-stone-800 mb-1.5">
+                      طريقة الدفع
+                    </label>
+                    <select
+                      value={promoPaymentMethod}
+                      onChange={(e) => setPromoPaymentMethod(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white border border-stone-200 rounded-xl text-sm"
+                    >
+                      <option value="بنكك">تطبيق بنكك (Bankak)</option>
+                      <option value="فوري">فوري (Fawry)</option>
+                      <option value="أوكاش">أوكاش (O-Cash)</option>
+                      <option value="دفع مباشر للإدارة">دفع مباشر لإدارة السوق في أبو جبيهة</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-stone-800 mb-1.5">
+                      رقم إشعار الدفع أو المرجع *
+                    </label>
+                    <input
+                      type="text"
+                      value={promoPaymentRef}
+                      onChange={(e) => setPromoPaymentRef(e.target.value)}
+                      placeholder="أدخل رقم العملية أو اسم المحول لتأكيد الطلب"
+                      className="w-full px-3.5 py-2.5 bg-white border border-stone-200 rounded-xl text-sm focus:outline-none focus:border-teal-700"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-stone-800 mb-1.5">
+                      صورة البنر (اختياري — تُقص تلقائياً لتناسب البنر)
+                    </label>
+                    <div className="flex items-center gap-3">
+                      <label className="px-3.5 py-2 bg-white hover:bg-stone-100 border border-stone-200 text-stone-800 text-xs font-semibold rounded-xl inline-flex items-center gap-2 cursor-pointer">
+                        <Upload className="w-4 h-4" />
+                        <span>{uploadingPromo ? 'جاري الرفع...' : 'اختيار صورة البنر'}</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          onChange={handlePromoBannerUpload}
+                          disabled={uploadingPromo}
+                          className="hidden"
+                        />
+                      </label>
+                      {promoBannerUrl && (
+                        <img
+                          src={promoBannerUrl}
+                          alt="صورة البنر"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                          className="w-16 h-12 rounded-lg object-cover border border-stone-200"
+                        />
+                      )}
+                    </div>
+                    <p className="text-[11px] text-stone-500 mt-1">
+                      إن لم تختر صورة، تُستخدم أول صورة من صور الإعلان.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-stone-800 mb-1.5">
+                      صورة إيصال التحويل (اختياري — يُسرّع المراجعة)
+                    </label>
+                    <div className="flex items-center gap-3">
+                      <label className="px-3.5 py-2 bg-white hover:bg-stone-100 border border-stone-200 text-stone-800 text-xs font-semibold rounded-xl inline-flex items-center gap-2 cursor-pointer">
+                        <Upload className="w-4 h-4" />
+                        <span>{uploadingPromo ? 'جاري الرفع...' : 'إرفاق صورة الإيصال'}</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          onChange={handlePromoReceiptUpload}
+                          disabled={uploadingPromo}
+                          className="hidden"
+                        />
+                      </label>
+                      {promoReceiptUrl && (
+                        <img
+                          src={promoReceiptUrl}
+                          alt="إيصال التحويل"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                          className="w-12 h-12 rounded-lg object-cover border border-stone-200"
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -582,6 +804,9 @@ export function AdFormPage({
                       src={url}
                       alt={`صورة ${idx + 1}`}
                       referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        e.currentTarget.style.opacity = '0.2';
+                      }}
                       className="w-full h-full object-cover"
                     />
                     <button
@@ -601,13 +826,15 @@ export function AdFormPage({
           <div className="pt-2 flex items-center gap-3">
             <button
               type="submit"
-              disabled={submitting || uploading}
+              disabled={submitting || uploading || uploadingPromo}
               className="flex-1 py-3 bg-teal-700 hover:bg-teal-800 text-white text-sm font-bold rounded-xl transition-colors disabled:opacity-60 cursor-pointer"
             >
               {submitting
                 ? 'جاري الحفظ...'
                 : isEditing
                 ? 'حفظ التعديلات'
+                : listingMode === 'paid'
+                ? 'نشر الإعلان وإرسال طلب التمييز'
                 : 'نشر الإعلان الآن'}
             </button>
             <button
