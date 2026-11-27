@@ -132,10 +132,9 @@ export function AdFormPage({
     setError('');
     setUploadingPromo(true);
     try {
-      // Banner is auto-cropped to a 4:3 frame so any image size/shape fits the home banner
+      // Whole image is kept (no cropping); it is resized and the banner fits it on display
       const urls = await uploadImages([e.target.files[0]], {
-        aspect: 4 / 3,
-        maxDim: 1280,
+        maxDim: 1600,
         force: true,
       });
       if (urls[0]) setPromoBannerUrl(urls[0]);
@@ -525,7 +524,7 @@ export function AdFormPage({
 
                   <div>
                     <label className="block text-xs font-bold text-stone-800 mb-1.5">
-                      صورة البنر (اختياري — تُقص تلقائياً لتناسب البنر)
+                      صورة البنر (اختياري — تظهر كاملة بدون قص)
                     </label>
                     <div className="flex items-center gap-3">
                       <label className="px-3.5 py-2 bg-white hover:bg-stone-100 border border-stone-200 text-stone-800 text-xs font-semibold rounded-xl inline-flex items-center gap-2 cursor-pointer">
