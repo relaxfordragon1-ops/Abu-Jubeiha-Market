@@ -1,125 +1,218 @@
-import { getDownloadURL, ref, uploadBytesResumable } from 'firebase/storage';
-import { auth, storage } from './firebase';
+import { auth } from './firebase';
 
 type ImageProcessOptions = { aspect?: number; maxDim?: number; force?: boolean };
 
-async function compressImageFile(file: File, opts: ImageProcessOptions = {}): Promise<File> {
-  if (!file.type.startsWith('image/') || file.type === 'image/gif') {
-    return file;
-  }
+const STORAGE_ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const UNSUPPORTED_IMAGE_MSG =
+  'صيغة الصورة غير مدعومة، يرجى اختيار صورة بصيغة JPG أو PNG أو WebP';
 
-  // Skip tiny images already under 140KB
-  if (!opts.force && !opts.aspect && file.size <= 140 * 1024) {
-    return file;
+type DecodedImage = {
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  release: () => void;
+};
+
+// Decodes any browser-readable image (respects EXIF rotation when supported).
+async function decodeImage(file: File): Promise<DecodedImage | null> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' } as any);
+      return {
+        source: bmp,
+        width: bmp.width,
+        height: bmp.height,
+        release: () => bmp.close(),
+      };
+    } catch {
+      // fall through to the <img> decoder
+    }
   }
 
   return new Promise((resolve) => {
     const img = new Image();
     const objectUrl = URL.createObjectURL(file);
-
-    img.onload = () => {
-      try {
-        const MAX_DIM = opts.maxDim || 1280;
-        // Optional centered crop to a fixed aspect ratio (used for paid banner images)
-        let sx = 0;
-        let sy = 0;
-        let sw = img.width;
-        let sh = img.height;
-        if (opts.aspect) {
-          if (sw / sh > opts.aspect) {
-            sw = Math.round(sh * opts.aspect);
-            sx = Math.round((img.width - sw) / 2);
-          } else {
-            sh = Math.round(sw / opts.aspect);
-            sy = Math.round((img.height - sh) / 2);
-          }
-        }
-        let width = sw;
-        let height = sh;
-        if (width > MAX_DIM || height > MAX_DIM) {
-          if (width >= height) {
-            height = Math.round((height * MAX_DIM) / width);
-            width = MAX_DIM;
-          } else {
-            width = Math.round((width * MAX_DIM) / height);
-            height = MAX_DIM;
-          }
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          URL.revokeObjectURL(objectUrl);
-          resolve(file);
-          return;
-        }
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
-
-        const targetMime = 'image/webp';
-        canvas.toBlob(
-          (blob) => {
-            URL.revokeObjectURL(objectUrl);
-            if (!blob || (!opts.aspect && blob.size >= file.size)) {
-              resolve(file);
-              return;
-            }
-            const baseName = file.name.replace(/\.[^.]+$/, '') || 'image';
-            resolve(new File([blob], `${baseName}.webp`, { type: targetMime }));
-          },
-          targetMime,
-          0.82
-        );
-      } catch {
-        URL.revokeObjectURL(objectUrl);
-        resolve(file);
-      }
-    };
-
+    img.onload = () =>
+      resolve({
+        source: img,
+        width: img.naturalWidth || img.width,
+        height: img.naturalHeight || img.height,
+        release: () => URL.revokeObjectURL(objectUrl),
+      });
     img.onerror = () => {
       URL.revokeObjectURL(objectUrl);
-      resolve(file);
+      resolve(null);
     };
-
     img.src = objectUrl;
   });
 }
 
-async function uploadToFirebaseStorage(file: File, uid: string): Promise<string> {
-  const ext = file.type === 'image/webp' ? 'webp' : file.type === 'image/png' ? 'png' : 'jpg';
-  const rand = Math.random().toString(36).slice(2, 10);
-  const storageRef = ref(storage, `marketplace/${uid}/${Date.now()}-${rand}.${ext}`);
-
-  const task = uploadBytesResumable(storageRef, file, {
-    contentType: file.type || 'image/jpeg',
-    cacheControl: 'public, max-age=31536000',
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    try {
+      canvas.toBlob((blob) => resolve(blob), type, quality);
+    } catch {
+      resolve(null);
+    }
   });
+}
 
-  // 20s budget (slow mobile networks); the upload is cancelled on timeout so the
-  // server fallback never creates a duplicate copy of the same image.
-  return new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      task.cancel();
-      reject(new Error('storage-timeout'));
-    }, 20000);
-    task.on(
-      'state_changed',
-      undefined,
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-      async () => {
-        clearTimeout(timer);
-        try {
-          resolve(await getDownloadURL(task.snapshot.ref));
-        } catch (err) {
-          reject(err);
+async function compressImageFile(file: File, opts: ImageProcessOptions = {}): Promise<File> {
+  if (!file.type.startsWith('image/')) {
+    return file;
+  }
+  // Keep GIFs untouched unless a fixed crop (avatar / banner) is requested
+  if (file.type === 'image/gif' && !opts.aspect && !opts.force) {
+    return file;
+  }
+
+  const isAllowedType = STORAGE_ALLOWED_TYPES.includes(file.type);
+  const decoded = await decodeImage(file);
+
+  if (!decoded || !decoded.width || !decoded.height) {
+    decoded?.release();
+    // Could not decode: keep the original only if the storage accepts its type
+    if (isAllowedType) return file;
+    throw new Error(UNSUPPORTED_IMAGE_MSG);
+  }
+
+  try {
+    const MAX_DIM = opts.maxDim || 1280;
+
+    // Optional centered crop to a fixed aspect ratio (avatar = 1, paid banner = 4/3)
+    let sx = 0;
+    let sy = 0;
+    let sw = decoded.width;
+    let sh = decoded.height;
+    if (opts.aspect) {
+      if (sw / sh > opts.aspect) {
+        sw = Math.round(sh * opts.aspect);
+        sx = Math.round((decoded.width - sw) / 2);
+      } else {
+        sh = Math.round(sw / opts.aspect);
+        sy = Math.round((decoded.height - sh) / 2);
+      }
+    }
+
+    let width = Math.max(1, sw);
+    let height = Math.max(1, sh);
+    let resized = false;
+    if (width > MAX_DIM || height > MAX_DIM) {
+      resized = true;
+      if (width >= height) {
+        height = Math.max(1, Math.round((height * MAX_DIM) / width));
+        width = MAX_DIM;
+      } else {
+        width = Math.max(1, Math.round((width * MAX_DIM) / height));
+        height = MAX_DIM;
+      }
+    }
+
+    // Skip small, already well-sized images
+    if (
+      !opts.force &&
+      !opts.aspect &&
+      !resized &&
+      isAllowedType &&
+      file.size <= 140 * 1024
+    ) {
+      return file;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      if (isAllowedType) return file;
+      throw new Error(UNSUPPORTED_IMAGE_MSG);
+    }
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(decoded.source, sx, sy, sw, sh, 0, 0, width, height);
+
+    // Prefer WebP; fall back to JPEG (white background) where WebP encoding is unavailable
+    const qualities = [0.82, 0.7, 0.55];
+    let blob: Blob | null = null;
+    for (const q of qualities) {
+      blob = await canvasToBlob(canvas, 'image/webp', q);
+      if (!blob || blob.type !== 'image/webp') {
+        const jpegCanvas = document.createElement('canvas');
+        jpegCanvas.width = width;
+        jpegCanvas.height = height;
+        const jctx = jpegCanvas.getContext('2d');
+        if (jctx) {
+          jctx.fillStyle = '#ffffff';
+          jctx.fillRect(0, 0, width, height);
+          jctx.drawImage(canvas, 0, 0);
+          blob = await canvasToBlob(jpegCanvas, 'image/jpeg', q);
         }
       }
+      if (blob && blob.size <= 1.5 * 1024 * 1024) break;
+    }
+
+    if (!blob) {
+      if (isAllowedType) return file;
+      throw new Error(UNSUPPORTED_IMAGE_MSG);
+    }
+    if (!opts.aspect && !opts.force && !resized && isAllowedType && blob.size >= file.size) {
+      return file;
+    }
+
+    const baseName = file.name.replace(/\.[^.]+$/, '') || 'image';
+    const outExt = blob.type === 'image/jpeg' ? 'jpg' : 'webp';
+    return new File([blob], `${baseName}.${outExt}`, { type: blob.type });
+  } finally {
+    decoded.release();
+  }
+}
+
+// Supabase Storage (free, no billing card required). The publishable key is public by design.
+const SUPABASE_URL: string =
+  (import.meta as any).env?.VITE_SUPABASE_URL || 'https://insikjodpyhcwnwvuixn.supabase.co';
+const SUPABASE_KEY: string =
+  (import.meta as any).env?.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  'sb_publishable_eZFNBEDINKiRu7JAzvH4AQ_E4WRmeKr';
+const SUPABASE_BUCKET = 'marketplace';
+
+async function uploadToSupabaseStorage(file: File, uid: string): Promise<string> {
+  const ext =
+    file.type === 'image/webp'
+      ? 'webp'
+      : file.type === 'image/png'
+      ? 'png'
+      : file.type === 'image/gif'
+      ? 'gif'
+      : 'jpg';
+  const rand = Math.random().toString(36).slice(2, 10);
+  const objectPath = `${uid}/${Date.now()}-${rand}.${ext}`;
+
+  // 20s budget (slow mobile networks); aborted on timeout so the server fallback
+  // never creates a duplicate copy of the same image.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${objectPath}`,
+      {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': file.type || 'image/jpeg',
+          'Cache-Control': 'max-age=31536000',
+          'x-upsert': 'false',
+        },
+        body: file,
+        signal: controller.signal,
+      }
     );
-  });
+    if (!res.ok) {
+      throw new Error(`supabase-upload-${res.status}`);
+    }
+    return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${objectPath}`;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function uploadImages(
@@ -132,17 +225,17 @@ export async function uploadImages(
   const compressedFiles = await Promise.all(rawList.map((f) => compressImageFile(f, options)));
   const uid = auth.currentUser?.uid;
 
-  // Attempt Firebase Cloud Storage first so images persist across deployments
+  // Attempt cloud storage first so images persist across deployments
   if (uid) {
     try {
       const cloudUrls = await Promise.all(
-        compressedFiles.map((file) => uploadToFirebaseStorage(file, uid))
+        compressedFiles.map((file) => uploadToSupabaseStorage(file, uid))
       );
       if (cloudUrls.length === compressedFiles.length) {
         return cloudUrls;
       }
     } catch {
-      // Fallback transparently to authenticated server upload when Storage bucket rules aren't configured
+      // Fallback transparently to authenticated server upload when cloud storage is unavailable
     }
   }
 
