@@ -569,20 +569,22 @@ export function AccountPage({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {(ad.status === 'approved' || ad.status === 'pending') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPromotingAd(ad);
+                          setPromoFeedback('');
+                          setProfileErr('');
+                        }}
+                        className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-950 text-xs font-bold rounded-lg flex items-center gap-1 cursor-pointer"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>تمييز مدفوع بالواجهة</span>
+                      </button>
+                    )}
                     {ad.status === 'approved' && (
                       <>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPromotingAd(ad);
-                            setPromoFeedback('');
-                            setProfileErr('');
-                          }}
-                          className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-950 text-xs font-bold rounded-lg flex items-center gap-1 cursor-pointer"
-                        >
-                          <Sparkles className="w-3.5 h-3.5" />
-                          <span>تمييز مدفوع بالواجهة</span>
-                        </button>
                         <button
                           type="button"
                           onClick={() => handleMarkStatus(ad.id, 'sold')}
