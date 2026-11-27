@@ -30,6 +30,28 @@ import {
 import { useAuth } from '../context/AuthContext';
 import type { Ad, AppRoute, HeroPromotion } from '../types';
 
+function AvatarImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+
+  if (!src || failed) {
+    return <UserIcon className="w-7 h-7 text-stone-400" />;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+      className="w-full h-full object-cover"
+    />
+  );
+}
+
 interface AccountPageProps {
   initialTab?: 'profile' | 'my-ads';
   onNavigate: (route: AppRoute) => void;
@@ -43,6 +65,7 @@ export function AccountPage({
 }: AccountPageProps) {
   const { user, loading: authLoading, logout, refreshMe, updateAccountProfile } = useAuth();
   const [tab, setTab] = useState<'profile' | 'my-ads'>(initialTab);
+  const [editingProfile, setEditingProfile] = useState(false);
 
   // Profile form state
   const [name, setName] = useState(user?.name ?? '');
@@ -131,7 +154,7 @@ export function AccountPage({
     if (!e.target.files || e.target.files.length === 0) return;
     setProfileErr('');
     try {
-      const urls = await uploadImages([e.target.files[0]]);
+      const urls = await uploadImages([e.target.files[0]], { aspect: 1, maxDim: 512, force: true });
       if (urls[0]) setAvatarUrl(urls[0]);
     } catch (err: any) {
       setProfileErr(err.message || 'تعذر رفع الصورة الشخصية');
@@ -155,6 +178,7 @@ export function AccountPage({
       setCurrentPassword('');
       setNewPassword('');
       setProfileMsg('تم تحديث بيانات الحساب بنجاح');
+      setEditingProfile(false);
     } catch (err: any) {
       setProfileErr(err.message);
     } finally {
@@ -229,27 +253,33 @@ export function AccountPage({
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6">
       {/* Header Summary */}
       <div className="bg-white border border-stone-200 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 sm:flex-1">
           <div className="w-16 h-16 rounded-full bg-stone-100 border border-stone-200 overflow-hidden flex items-center justify-center shrink-0">
-            {user.avatar_url ? (
-              <img
-                src={user.avatar_url}
-                alt={user.name}
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <UserIcon className="w-7 h-7 text-stone-400" />
-            )}
+            <AvatarImage src={user.avatar_url} alt={user.name} />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-display text-xl font-extrabold text-stone-900">{user.name}</h1>
-              {Boolean(user.is_verified_account) && (
-                <span title="حساب موثق" className="inline-flex">
-                  <ShieldCheck className="w-5 h-5 text-teal-700" />
-                </span>
-              )}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="font-display text-xl font-extrabold text-stone-900">{user.name}</h1>
+                {Boolean(user.is_verified_account) && (
+                  <span title="حساب موثق" className="inline-flex">
+                    <ShieldCheck className="w-5 h-5 text-teal-700" />
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setTab('profile');
+                  setProfileErr('');
+                  setProfileMsg('');
+                  setEditingProfile((prev) => (tab === 'profile' ? !prev : true));
+                }}
+                className="shrink-0 px-2.5 py-1 bg-stone-100 hover:bg-stone-200 text-stone-700 text-[11px] font-bold rounded-lg inline-flex items-center gap-1 cursor-pointer"
+              >
+                <Pencil className="w-3 h-3" />
+                <span>تعديل</span>
+              </button>
             </div>
             <p className="text-xs text-stone-500 mt-0.5" dir="ltr">
               {user.email}
@@ -316,6 +346,13 @@ export function AccountPage({
       </div>
 
       {tab === 'profile' ? (
+        !editingProfile ? (
+          profileMsg ? (
+            <div className="p-3 bg-teal-50 border border-teal-200 rounded-xl text-sm text-teal-900">
+              {profileMsg}
+            </div>
+          ) : null
+        ) : (
         <form
           onSubmit={handleSaveProfile}
           className="bg-white border border-stone-200 rounded-2xl p-6 space-y-5"
@@ -336,16 +373,7 @@ export function AccountPage({
           {/* Avatar Upload */}
           <div className="flex items-center gap-4">
             <div className="w-16 h-16 rounded-full bg-stone-100 border border-stone-200 overflow-hidden flex items-center justify-center shrink-0">
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt={name}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <UserIcon className="w-7 h-7 text-stone-400" />
-              )}
+              <AvatarImage src={avatarUrl} alt={name} />
             </div>
             <label className="px-4 py-2 bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-semibold rounded-lg inline-flex items-center gap-2 cursor-pointer">
               <Camera className="w-4 h-4" />
@@ -440,6 +468,7 @@ export function AccountPage({
             {savingProfile ? 'جاري الحفظ...' : 'حفظ التغييرات'}
           </button>
         </form>
+        )
       ) : (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
