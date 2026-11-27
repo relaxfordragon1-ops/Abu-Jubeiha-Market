@@ -1639,6 +1639,38 @@ export async function adminFetchHeroPromotions(): Promise<HeroPromotion[]> {
     const snap = await getDocs(collection(db, 'heroPromotions'));
     const list: HeroPromotion[] = [];
     snap.forEach((d) => list.push(mapHeroDoc(d.id, d.data())));
+
+    // Expire finished paid promotions and remove the featured mark from their ads
+    const nowMs = Date.now();
+    const isLive = (p: HeroPromotion) => {
+      if (p.status !== 'active') return false;
+      const exp = Date.parse(p.expires_at);
+      return Number.isNaN(exp) || exp > nowMs;
+    };
+    for (const p of list) {
+      if (p.status !== 'active' || !p.expires_at) continue;
+      const exp = Date.parse(p.expires_at);
+      if (Number.isNaN(exp) || exp > nowMs) continue;
+      try {
+        await updateDoc(doc(db, 'heroPromotions', p.id), {
+          status: 'expired',
+          updatedAt: serverTimestamp(),
+        });
+        p.status = 'expired';
+        const stillLive = p.ad_id
+          ? list.some((o) => o.id !== p.id && o.ad_id === p.ad_id && isLive(o))
+          : false;
+        if (p.ad_id && !stillLive) {
+          await updateDoc(doc(db, 'ads', p.ad_id), {
+            isFeatured: false,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch {
+        // best effort; will be retried on next load
+      }
+    }
+
     return list.sort((a, b) => a.sort_order - b.sort_order || b.created_at.localeCompare(a.created_at));
   } catch (err) {
     handleFirestoreError(err, OperationType.LIST, 'heroPromotions');
@@ -1740,10 +1772,59 @@ export async function adminUpdateHeroPromotion(
         expiresAt = new Date(Date.now() + days * 24 * 3600 * 1000).toISOString();
       }
       if (existing.adId) {
+        const promoAdId = String(existing.adId);
+        const adSnap = await getDoc(doc(db, 'ads', promoAdId));
+        if (adSnap.exists()) {
+          const adData = adSnap.data();
+          const wasPending = adData.status === 'pending';
+          // Activating a paid banner also approves the ad itself if it is still pending
+          await updateDoc(doc(db, 'ads', promoAdId), {
+            isFeatured: true,
+            ...(wasPending ? { status: 'approved', rejectionReason: '' } : {}),
+            updatedAt: serverTimestamp(),
+          });
+          if (wasPending) {
+            const adImages = Array.isArray(adData.images) ? adData.images : [];
+            const adTypeRaw = String(adData.adType || 'offer');
+            const promoAdType: AdType =
+              adTypeRaw === 'wanted' || adTypeRaw === 'job' || adTypeRaw === 'announcement'
+                ? adTypeRaw
+                : 'offer';
+            const adOwnerId = String(adData.ownerId || '');
+            void createNewAdAlert({
+              adId: promoAdId,
+              title: String(adData.title || ''),
+              categoryName: String(adData.categoryName || 'سوق أبو جبيهة'),
+              categorySlug: String(adData.categorySlug || ''),
+              price: Number(adData.price || 0),
+              adType: promoAdType,
+              location: String(adData.location || ''),
+              imageUrl: String(adImages[0] || ''),
+              ownerId: adOwnerId || actor.id,
+              ownerName: String(adData.ownerName || 'معلن'),
+            });
+            if (adOwnerId && adOwnerId !== actor.id) {
+              void createNotification({
+                userId: adOwnerId,
+                title: 'تمت الموافقة على إعلانك',
+                body: `أصبح إعلانك "${String(adData.title || '')}" منشوراً ومتاحاً لجميع المتصفحين.`,
+                type: 'ad_approved',
+                linkAdId: promoAdId,
+                linkPage: 'ad-detail',
+              }).catch(() => {});
+            }
+          }
+        }
+      }
+    } else if (existing.adId) {
+      // Paused / rejected: remove the featured mark from the ad
+      try {
         await updateDoc(doc(db, 'ads', String(existing.adId)), {
-          isFeatured: true,
+          isFeatured: false,
           updatedAt: serverTimestamp(),
         });
+      } catch {
+        // ad may have been deleted; ignore
       }
     }
 
