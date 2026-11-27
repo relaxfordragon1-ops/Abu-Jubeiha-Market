@@ -258,12 +258,12 @@ export function MessagesPage({
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
                     placeholder="اكتب رسالتك هنا..."
-                    className="flex-1 px-3.5 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm focus:outline-none focus:border-teal-700"
+                    className="flex-1 min-w-0 px-3.5 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm focus:outline-none focus:border-teal-700"
                   />
                   <button
                     type="submit"
                     disabled={sending || !draft.trim()}
-                    className="px-4 py-2.5 bg-teal-700 hover:bg-teal-800 text-white text-sm font-bold rounded-xl flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                    className="shrink-0 px-4 py-2.5 bg-teal-700 hover:bg-teal-800 text-white text-sm font-bold rounded-xl flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
                   >
                     <Send className="w-4 h-4" />
                     <span>إرسال</span>
