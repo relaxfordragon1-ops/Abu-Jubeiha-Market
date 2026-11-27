@@ -194,7 +194,7 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
               </button>
 
               {notifOpen && (
-                <div className="absolute left-0 mt-2 w-80 sm:w-96 max-w-[92vw] bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden z-50">
+                <div className="fixed inset-x-3 top-[72px] sm:absolute sm:inset-x-auto sm:top-auto sm:left-0 mt-2 sm:w-96 max-w-none sm:max-w-[92vw] bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden z-50">
                   <div className="px-3 pt-2.5 pb-2 border-b border-stone-100 bg-stone-50 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-bold text-sm text-stone-900">
