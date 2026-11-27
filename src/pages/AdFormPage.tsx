@@ -317,6 +317,7 @@ export function AdFormPage({
             images: payload.images,
           } as unknown as Ad;
           setPaymentStage({ ad: adForPromo });
+          window.scrollTo({ top: 0, behavior: 'smooth' });
         } else {
           setSuccessMsg(res.message);
         }
@@ -325,6 +326,7 @@ export function AdFormPage({
       onSaved();
     } catch (err: any) {
       setError(err.message || 'تعذر حفظ الإعلان');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } finally {
       setSubmitting(false);
     }
@@ -879,6 +881,12 @@ export function AdFormPage({
               </div>
             )}
           </div>
+
+          {error && (
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-800">
+              {error}
+            </div>
+          )}
 
           <div className="pt-2 flex items-center gap-3">
             <button
