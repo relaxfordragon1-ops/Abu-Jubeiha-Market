@@ -4,6 +4,8 @@ import { uploadImages, ABU_JUBEIHA_AREAS } from '../lib/api';
 import { auth } from '../lib/firebase';
 import { createAd, createHeroPromotionRequest, fetchAdById, updateAd } from '../lib/firestoreApi';
 import { useAuth } from '../context/AuthContext';
+import { PaymentAccountDetails } from '../components/PaymentAccountDetails';
+import { PAYMENT_ACCOUNTS } from '../lib/paymentAccounts';
 import type { Ad, AdType, AppRoute, Category } from '../types';
 
 interface AdFormPageProps {
@@ -49,6 +51,8 @@ export function AdFormPage({
   const [promoReceiptUrl, setPromoReceiptUrl] = useState('');
   const [promoBannerUrl, setPromoBannerUrl] = useState('');
   const [uploadingPromo, setUploadingPromo] = useState(false);
+  const [paymentStage, setPaymentStage] = useState<{ ad: Ad } | null>(null);
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
 
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiDrafting, setAiDrafting] = useState(false);
@@ -248,15 +252,38 @@ export function AdFormPage({
     }
   };
 
+  const handlePaymentSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!paymentStage) return;
+    setError('');
+
+    if (promoPaymentRef.trim().length < 3) {
+      setError('يرجى إدخال رقم العملية لإرسال طلب الإعلان المدفوع');
+      return;
+    }
+
+    setPaymentSubmitting(true);
+    try {
+      const msg = await createHeroPromotionRequest(user, paymentStage.ad, {
+        package_days: promoDays,
+        payment_method: promoPaymentMethod,
+        payment_reference: promoPaymentRef.trim(),
+        payment_receipt_url: promoReceiptUrl || undefined,
+        banner_url: promoBannerUrl || undefined,
+      });
+      setSuccessMsg(`تم نشر الإعلان. ${msg}`);
+      setPaymentStage(null);
+    } catch (err: any) {
+      setError(err.message || 'تعذر إرسال طلب الدفع، حاول مرة أخرى');
+    } finally {
+      setPaymentSubmitting(false);
+    }
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
-
-    if (!isEditing && listingMode === 'paid' && promoPaymentRef.trim().length < 3) {
-      setError('يرجى إدخال رقم إشعار الدفع أو المرجع لإرسال طلب الإعلان المدفوع');
-      return;
-    }
 
     setSubmitting(true);
 
@@ -282,28 +309,14 @@ export function AdFormPage({
       } else {
         const res = await createAd(user, categories, payload);
         if (listingMode === 'paid') {
-          let promoNote = '';
-          try {
-            const adForPromo = {
-              id: res.id,
-              title: payload.title,
-              price: payload.price,
-              location: payload.location,
-              images: payload.images,
-            } as unknown as Ad;
-            promoNote = await createHeroPromotionRequest(user, adForPromo, {
-              package_days: promoDays,
-              payment_method: promoPaymentMethod,
-              payment_reference: promoPaymentRef.trim(),
-              payment_receipt_url: promoReceiptUrl || undefined,
-              banner_url: promoBannerUrl || undefined,
-            });
-          } catch (promoErr: any) {
-            promoNote = `لكن تعذر إرسال طلب الإعلان المدفوع (${
-              promoErr?.message || 'خطأ غير معروف'
-            }). يمكنك إعادة المحاولة من صفحة "إعلاناتي".`;
-          }
-          setSuccessMsg(`${res.message}. ${promoNote}`);
+          const adForPromo = {
+            id: res.id,
+            title: payload.title,
+            price: payload.price,
+            location: payload.location,
+            images: payload.images,
+          } as unknown as Ad;
+          setPaymentStage({ ad: adForPromo });
         } else {
           setSuccessMsg(res.message);
         }
@@ -346,7 +359,110 @@ export function AdFormPage({
         </button>
       </div>
 
-      {successMsg ? (
+      {paymentStage && !successMsg ? (
+        <form
+          onSubmit={handlePaymentSubmit}
+          className="bg-white border border-amber-200 rounded-2xl p-6 sm:p-8 space-y-5"
+        >
+          <div className="p-3.5 bg-teal-50 border border-teal-200 rounded-xl text-sm text-teal-900">
+            تم نشر إعلانك «{paymentStage.ad.title}». أكمل الدفع الآن لتفعيل التمييز في البنر الرئيسي.
+          </div>
+
+          {error && (
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-800">
+              {error}
+            </div>
+          )}
+
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 sm:p-5 space-y-4">
+            <h2 className="text-sm font-extrabold text-stone-900">مرحلة الدفع</h2>
+
+            <div className="flex items-center justify-between bg-white border border-amber-200 rounded-xl px-3.5 py-2.5 text-sm">
+              <span className="text-stone-600">الباقة المختارة</span>
+              <span className="font-bold text-stone-900">
+                {promoDays} يوم — {new Intl.NumberFormat('en-US').format(
+                  ({ 3: 5000, 7: 10000, 14: 18000, 30: 30000 } as Record<number, number>)[promoDays] ?? 10000
+                )} ج.س
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-stone-800 mb-1.5">طريقة الدفع</label>
+              <select
+                value={promoPaymentMethod}
+                onChange={(e) => setPromoPaymentMethod(e.target.value)}
+                className="w-full px-3 py-2.5 bg-white border border-stone-200 rounded-xl text-sm"
+              >
+                {PAYMENT_ACCOUNTS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <PaymentAccountDetails method={promoPaymentMethod} />
+
+            <div>
+              <label className="block text-xs font-bold text-stone-800 mb-1.5">
+                صورة إشعار الدفع (يُسرّع المراجعة)
+              </label>
+              <div className="flex items-center gap-3">
+                <label className="px-3.5 py-2 bg-white hover:bg-stone-100 border border-stone-200 text-stone-800 text-xs font-semibold rounded-xl inline-flex items-center gap-2 cursor-pointer">
+                  <Upload className="w-4 h-4" />
+                  <span>{uploadingPromo ? 'جاري الرفع...' : 'إرفاق صورة الإشعار'}</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={handlePromoReceiptUpload}
+                    disabled={uploadingPromo}
+                    className="hidden"
+                  />
+                </label>
+                {promoReceiptUrl && (
+                  <img
+                    src={promoReceiptUrl}
+                    alt="إشعار الدفع"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
+                    className="w-12 h-12 rounded-lg object-cover border border-stone-200"
+                  />
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-stone-800 mb-1.5">رقم العملية *</label>
+              <input
+                type="text"
+                value={promoPaymentRef}
+                onChange={(e) => setPromoPaymentRef(e.target.value)}
+                placeholder="أدخل رقم العملية الموجود في إشعار التحويل"
+                className="w-full px-3.5 py-2.5 bg-white border border-stone-200 rounded-xl text-sm focus:outline-none focus:border-teal-700"
+              />
+            </div>
+          </div>
+
+          <div className="pt-2 flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={paymentSubmitting || uploadingPromo}
+              className="flex-1 py-3 bg-amber-400 hover:bg-amber-500 text-stone-950 text-sm font-extrabold rounded-xl transition-colors disabled:opacity-60 cursor-pointer"
+            >
+              {paymentSubmitting ? 'جاري الإرسال...' : 'إرسال طلب التفعيل'}
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate({ page: 'account', tab: 'my-ads' })}
+              className="px-5 py-3 bg-stone-100 hover:bg-stone-200 text-stone-700 text-sm font-semibold rounded-xl cursor-pointer"
+            >
+              الدفع لاحقاً
+            </button>
+          </div>
+        </form>
+      ) : successMsg ? (
         <div className="bg-white border border-teal-200 rounded-2xl p-8 text-center space-y-4">
           <CheckCircle2 className="w-12 h-12 text-teal-700 mx-auto" />
           <h2 className="font-display text-xl font-bold text-stone-900">{successMsg}</h2>
@@ -474,7 +590,7 @@ export function AdFormPage({
                 <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 sm:p-5 space-y-4">
                   <p className="text-xs text-stone-700 leading-relaxed">
                     يظهر إعلانك في البنر الرئيسي بالتناوب التلقائي كل 5 ثوانٍ مع علامة «إعلان مميز مدفوع»،
-                    ويُفعَّل بعد مراجعة الدفع.
+                    وبعد الضغط على «نشر» تنتقل لمرحلة الدفع (تفاصيل الحساب + إشعار الدفع + رقم العملية)، ويُفعَّل بعد مراجعة الدفع.
                   </p>
 
                   <div>
@@ -491,35 +607,6 @@ export function AdFormPage({
                       <option value={14}>14 يوم — 18,000 ج.س</option>
                       <option value={30}>30 يوم — 30,000 ج.س</option>
                     </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-stone-800 mb-1.5">
-                      طريقة الدفع
-                    </label>
-                    <select
-                      value={promoPaymentMethod}
-                      onChange={(e) => setPromoPaymentMethod(e.target.value)}
-                      className="w-full px-3 py-2.5 bg-white border border-stone-200 rounded-xl text-sm"
-                    >
-                      <option value="بنكك">تطبيق بنكك (Bankak)</option>
-                      <option value="فوري">فوري (Fawry)</option>
-                      <option value="أوكاش">أوكاش (O-Cash)</option>
-                      <option value="دفع مباشر للإدارة">دفع مباشر لإدارة السوق في أبو جبيهة</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-stone-800 mb-1.5">
-                      رقم إشعار الدفع أو المرجع *
-                    </label>
-                    <input
-                      type="text"
-                      value={promoPaymentRef}
-                      onChange={(e) => setPromoPaymentRef(e.target.value)}
-                      placeholder="أدخل رقم العملية أو اسم المحول لتأكيد الطلب"
-                      className="w-full px-3.5 py-2.5 bg-white border border-stone-200 rounded-xl text-sm focus:outline-none focus:border-teal-700"
-                    />
                   </div>
 
                   <div>
@@ -555,35 +642,6 @@ export function AdFormPage({
                     </p>
                   </div>
 
-                  <div>
-                    <label className="block text-xs font-bold text-stone-800 mb-1.5">
-                      صورة إيصال التحويل (اختياري — يُسرّع المراجعة)
-                    </label>
-                    <div className="flex items-center gap-3">
-                      <label className="px-3.5 py-2 bg-white hover:bg-stone-100 border border-stone-200 text-stone-800 text-xs font-semibold rounded-xl inline-flex items-center gap-2 cursor-pointer">
-                        <Upload className="w-4 h-4" />
-                        <span>{uploadingPromo ? 'جاري الرفع...' : 'إرفاق صورة الإيصال'}</span>
-                        <input
-                          type="file"
-                          accept="image/jpeg,image/png,image/webp"
-                          onChange={handlePromoReceiptUpload}
-                          disabled={uploadingPromo}
-                          className="hidden"
-                        />
-                      </label>
-                      {promoReceiptUrl && (
-                        <img
-                          src={promoReceiptUrl}
-                          alt="إيصال التحويل"
-                          referrerPolicy="no-referrer"
-                          onError={(e) => {
-                            e.currentTarget.style.display = 'none';
-                          }}
-                          className="w-12 h-12 rounded-lg object-cover border border-stone-200"
-                        />
-                      )}
-                    </div>
-                  </div>
                 </div>
               )}
             </div>
@@ -833,7 +891,7 @@ export function AdFormPage({
                 : isEditing
                 ? 'حفظ التعديلات'
                 : listingMode === 'paid'
-                ? 'نشر الإعلان وإرسال طلب التمييز'
+                ? 'نشر الإعلان والانتقال للدفع'
                 : 'نشر الإعلان الآن'}
             </button>
             <button
