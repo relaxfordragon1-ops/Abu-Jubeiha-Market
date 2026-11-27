@@ -54,6 +54,15 @@ export function Footer({ onNavigate }: { onNavigate: (route: AppRoute) => void }
               <li>
                 <button
                   type="button"
+                  onClick={() => onNavigate({ page: 'new-ads-alerts' })}
+                  className="hover:text-teal-800 cursor-pointer"
+                >
+                  إشعارات الإعلانات الجديدة
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
                   onClick={() => onNavigate({ page: 'search', category: 'wanted' })}
                   className="hover:text-teal-800 cursor-pointer"
                 >

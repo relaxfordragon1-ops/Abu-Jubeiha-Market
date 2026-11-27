@@ -33,6 +33,7 @@ import type {
   ChatMessage,
   Conversation,
   HeroPromotion,
+  NewAdAlert,
   NotificationType,
   ReportItem,
   User,
@@ -704,7 +705,20 @@ export async function createAd(
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-    if (!isStaff) {
+    if (isStaff) {
+      void createNewAdAlert({
+        adId: id,
+        title: clampStr(payload.title, 160),
+        categoryName: clampStr(cat.name_ar, 100),
+        categorySlug: clampStr(cat.slug, 80),
+        price: Math.max(0, Number(payload.price) || 0),
+        adType: payload.ad_type,
+        location: clampStr(payload.location, 120),
+        imageUrl: clampStr((payload.images || [])[0] || '', 500),
+        ownerId: user.id,
+        ownerName: clampStr(user.name, 80) || 'معلن',
+      });
+    } else {
       void notifySanadWebhook({
         event: "new_ad",
         id,
@@ -1299,6 +1313,135 @@ export async function markAllNotificationsRead(notifications: AppNotification[])
   }
 }
 
+export async function createNewAdAlert(payload: {
+  adId: string;
+  title: string;
+  categoryName: string;
+  categorySlug: string;
+  price: number;
+  adType: AdType;
+  location: string;
+  imageUrl: string;
+  ownerId: string;
+  ownerName: string;
+}): Promise<void> {
+  const cleanAdId = clampStr(payload.adId, 110);
+  if (!cleanAdId || !payload.ownerId) return;
+  const alertId = `alert_${cleanAdId}`;
+  try {
+    await setDoc(doc(db, 'newAdAlerts', alertId), {
+      adId: cleanAdId,
+      title: clampStr(payload.title, 160) || 'إعلان جديد',
+      categoryName: clampStr(payload.categoryName, 100) || 'سوق أبو جبيهة',
+      categorySlug: clampStr(payload.categorySlug, 80),
+      price: Math.max(0, Number(payload.price) || 0),
+      adType: ['offer', 'wanted', 'job', 'announcement'].includes(payload.adType)
+        ? payload.adType
+        : 'offer',
+      location: clampStr(payload.location, 120),
+      imageUrl: clampStr(payload.imageUrl, 500),
+      ownerId: clampStr(payload.ownerId, 128),
+      ownerName: clampStr(payload.ownerName, 80) || 'معلن',
+      createdAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-fatal if rules have not yet been deployed to Firebase Console
+  }
+}
+
+export function subscribeToNewAdAlerts(onUpdate: (alerts: NewAdAlert[]) => void): () => void {
+  let fallbackUnsub: (() => void) | null = null;
+
+  const startFallback = () => {
+    if (fallbackUnsub) return;
+    const adsQ = query(collection(db, 'ads'), where('status', '==', 'approved'));
+    fallbackUnsub = onSnapshot(
+      adsQ,
+      (snap) => {
+        const list: NewAdAlert[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          const images = Array.isArray(data.images) ? data.images : [];
+          const adTypeRaw = String(data.adType || 'offer');
+          const adType: AdType =
+            adTypeRaw === 'wanted' || adTypeRaw === 'job' || adTypeRaw === 'announcement'
+              ? adTypeRaw
+              : 'offer';
+          list.push({
+            id: `alert_${d.id}`,
+            ad_id: d.id,
+            title: String(data.title || ''),
+            category_name: String(data.categoryName || 'سوق أبو جبيهة'),
+            category_slug: String(data.categorySlug || ''),
+            price: Number(data.price || 0),
+            ad_type: adType,
+            location: String(data.location || ''),
+            image_url: String(images[0] || ''),
+            owner_id: String(data.ownerId || ''),
+            owner_name: String(data.ownerName || 'معلن'),
+            created_at: toIsoString(data.createdAt),
+          });
+        });
+        list.sort((a, b) => b.created_at.localeCompare(a.created_at));
+        onUpdate(list.slice(0, 40));
+      },
+      () => {
+        onUpdate([]);
+      }
+    );
+  };
+
+  const alertsUnsub = onSnapshot(
+    collection(db, 'newAdAlerts'),
+    (snap) => {
+      if (snap.empty) {
+        startFallback();
+        return;
+      }
+      if (fallbackUnsub) {
+        fallbackUnsub();
+        fallbackUnsub = null;
+      }
+      const list: NewAdAlert[] = [];
+      snap.forEach((d) => {
+        const data = d.data();
+        const adTypeRaw = String(data.adType || 'offer');
+        const adType: AdType =
+          adTypeRaw === 'wanted' || adTypeRaw === 'job' || adTypeRaw === 'announcement'
+            ? adTypeRaw
+            : 'offer';
+        list.push({
+          id: d.id,
+          ad_id: String(data.adId || d.id),
+          title: String(data.title || ''),
+          category_name: String(data.categoryName || 'سوق أبو جبيهة'),
+          category_slug: String(data.categorySlug || ''),
+          price: Number(data.price || 0),
+          ad_type: adType,
+          location: String(data.location || ''),
+          image_url: String(data.imageUrl || ''),
+          owner_id: String(data.ownerId || ''),
+          owner_name: String(data.ownerName || 'معلن'),
+          created_at: toIsoString(data.createdAt),
+        });
+      });
+      list.sort((a, b) => b.created_at.localeCompare(a.created_at));
+      onUpdate(list.slice(0, 40));
+    },
+    () => {
+      startFallback();
+    }
+  );
+
+  return () => {
+    alertsUnsub();
+    if (fallbackUnsub) {
+      fallbackUnsub();
+      fallbackUnsub = null;
+    }
+  };
+}
+
 // ==================== REPORTS ====================
 
 export async function submitReport(
@@ -1464,6 +1607,27 @@ export async function adminModerateAd(
         linkAdId: adId,
         linkPage: payload.status === 'approved' ? 'ad-detail' : 'account',
       }).catch(() => {});
+    }
+
+    if (payload.status === 'approved') {
+      const images = Array.isArray(existing.images) ? existing.images : [];
+      const adTypeRaw = String(existing.adType || 'offer');
+      const adType: AdType =
+        adTypeRaw === 'wanted' || adTypeRaw === 'job' || adTypeRaw === 'announcement'
+          ? adTypeRaw
+          : 'offer';
+      void createNewAdAlert({
+        adId,
+        title: String(existing.title || ''),
+        categoryName: String(existing.categoryName || 'سوق أبو جبيهة'),
+        categorySlug: String(existing.categorySlug || ''),
+        price: Number(existing.price || 0),
+        adType,
+        location: String(existing.location || ''),
+        imageUrl: String(images[0] || ''),
+        ownerId: ownerId || actor.id,
+        ownerName: String(existing.ownerName || 'معلن'),
+      });
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);

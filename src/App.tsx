@@ -19,6 +19,7 @@ import { AdFormPage } from './pages/AdFormPage';
 import { AuthPage } from './pages/AuthPage';
 import { AccountPage } from './pages/AccountPage';
 import { FavoritesPage } from './pages/FavoritesPage';
+import { NewAdAlertsPage } from './pages/NewAdAlertsPage';
 import { MessagesPage } from './pages/MessagesPage';
 import { AdminDashboardPage } from './pages/AdminDashboardPage';
 import type { Ad, AppRoute, Category, HeroPromotion } from './types';
@@ -187,6 +188,10 @@ function MarketplaceApp() {
             onNavigate={navigate}
             onFavoriteChanged={loadMarketplaceData}
           />
+        )}
+
+        {route.page === 'new-ads-alerts' && (
+          <NewAdAlertsPage categories={categories} onNavigate={navigate} />
         )}
 
         {route.page === 'messages' && (

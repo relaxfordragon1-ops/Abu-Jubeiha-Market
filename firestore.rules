@@ -317,6 +317,31 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    function isValidNewAdAlert(data) {
+      return data.keys().hasAll([
+          'adId', 'title', 'categoryName', 'categorySlug',
+          'price', 'adType', 'location', 'imageUrl',
+          'ownerId', 'ownerName', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'adId', 'title', 'categoryName', 'categorySlug',
+          'price', 'adType', 'location', 'imageUrl',
+          'ownerId', 'ownerName', 'createdAt'
+        ]) &&
+        isValidId(data.adId) &&
+        isNonEmptyString(data.title, 2, 160) &&
+        isNonEmptyString(data.categoryName, 1, 100) &&
+        isOptionalString(data.categorySlug, 80) &&
+        data.price is number &&
+        data.price >= 0 &&
+        data.adType in ['offer', 'wanted', 'job', 'announcement'] &&
+        isOptionalString(data.location, 120) &&
+        isOptionalString(data.imageUrl, 500) &&
+        isValidId(data.ownerId) &&
+        isNonEmptyString(data.ownerName, 1, 80) &&
+        data.createdAt is timestamp;
+    }
+
     // ==================== COLLECTION RULES ====================
 
     match /test/connection {
@@ -675,6 +700,15 @@ service cloud.firestore {
         existing().userId == request.auth.uid ||
         isStaff()
       );
+    }
+
+    match /newAdAlerts/{alertId} {
+      allow get, list: if true;
+      allow create, update: if isStaff() &&
+        isValidId(alertId) &&
+        isValidNewAdAlert(incoming()) &&
+        incoming().createdAt == request.time;
+      allow delete: if isStaff() && isValidId(alertId);
     }
   }
 }

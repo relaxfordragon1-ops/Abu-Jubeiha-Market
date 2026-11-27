@@ -186,6 +186,21 @@ export interface AppNotification {
   created_at: string;
 }
 
+export interface NewAdAlert {
+  id: string;
+  ad_id: string;
+  title: string;
+  category_name: string;
+  category_slug: string;
+  price: number;
+  ad_type: AdType;
+  location: string;
+  image_url: string;
+  owner_id: string;
+  owner_name: string;
+  created_at: string;
+}
+
 export type AppRoute =
   | { page: 'home' }
   | {
@@ -201,6 +216,7 @@ export type AppRoute =
   | { page: 'ad-new' }
   | { page: 'ad-edit'; adId: string }
   | { page: 'favorites' }
+  | { page: 'new-ads-alerts' }
   | { page: 'messages'; withUserId?: string; adId?: string | null }
   | { page: 'account'; tab?: 'profile' | 'my-ads' }
   | { page: 'auth'; mode?: 'login' | 'register' | 'forgot' }

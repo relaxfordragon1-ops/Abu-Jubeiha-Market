@@ -8,11 +8,12 @@ import {
   ShieldCheck,
   Bell,
   CheckCheck,
+  Tag,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { formatArabicDate } from '../lib/api';
+import { formatArabicDate, formatPriceSDG } from '../lib/api';
 import { PWAInstallButton } from './PWAInstallButton';
-import type { AppNotification, AppRoute } from '../types';
+import type { AppNotification, AppRoute, NewAdAlert } from '../types';
 
 interface NavbarProps {
   route: AppRoute;
@@ -25,12 +26,18 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
     loading: authLoading,
     stats,
     notifications,
+    newAdAlerts,
+    newAlertsLastSeenAt,
+    unreadNewAdAlertsCount,
     markNotificationAsRead,
     markAllNotificationsAsRead,
+    markNewAdAlertsSeen,
   } = useAuth();
   const isStaff = user?.role === 'admin' || user?.role === 'moderator';
   const [notifOpen, setNotifOpen] = useState(false);
+  const [notifTab, setNotifTab] = useState<'new-ads' | 'personal'>('new-ads');
   const notifRef = useRef<HTMLDivElement>(null);
+  const totalUnreadBell = unreadNewAdAlertsCount + (user ? stats.unreadNotifications : 0);
 
   useEffect(() => {
     const handleOutside = (e: MouseEvent) => {
@@ -41,6 +48,12 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
     document.addEventListener('mousedown', handleOutside);
     return () => document.removeEventListener('mousedown', handleOutside);
   }, []);
+
+  const handleNewAdAlertClick = (alert: NewAdAlert) => {
+    markNewAdAlertsSeen();
+    setNotifOpen(false);
+    onNavigate({ page: 'ad-detail', adId: alert.ad_id });
+  };
 
   const handleNotificationClick = async (n: AppNotification) => {
     if (!n.is_read) {
@@ -153,43 +166,151 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <PWAInstallButton />
 
-            {user && (
-              <div className="relative" ref={notifRef}>
-                <button
-                  type="button"
-                  onClick={() => setNotifOpen((prev) => !prev)}
-                  aria-label="الإشعارات"
-                  className="relative p-2 rounded-lg text-stone-600 hover:text-stone-900 hover:bg-stone-100 transition-colors cursor-pointer"
-                >
-                  <Bell className="w-5 h-5" />
-                  {stats.unreadNotifications > 0 && (
-                    <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-md bg-amber-500 text-stone-950 text-[10px] font-mono-num font-extrabold flex items-center justify-center">
-                      {stats.unreadNotifications > 9 ? '9+' : stats.unreadNotifications}
-                    </span>
-                  )}
-                </button>
+            <div className="relative" ref={notifRef}>
+              <button
+                type="button"
+                onClick={() => {
+                  setNotifOpen((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      if (unreadNewAdAlertsCount > 0 || !user) {
+                        setNotifTab('new-ads');
+                      } else if (stats.unreadNotifications > 0) {
+                        setNotifTab('personal');
+                      }
+                    }
+                    return next;
+                  });
+                }}
+                aria-label="الإشعارات"
+                className="relative p-2 rounded-lg text-stone-600 hover:text-stone-900 hover:bg-stone-100 transition-colors cursor-pointer"
+              >
+                <Bell className="w-5 h-5" />
+                {totalUnreadBell > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-md bg-amber-500 text-stone-950 text-[10px] font-mono-num font-extrabold flex items-center justify-center">
+                    {totalUnreadBell > 9 ? '9+' : totalUnreadBell}
+                  </span>
+                )}
+              </button>
 
-                {notifOpen && (
-                  <div className="absolute left-0 mt-2 w-80 max-w-[92vw] bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden z-50">
-                    <div className="px-4 py-3 border-b border-stone-100 flex items-center justify-between gap-2 bg-stone-50">
+              {notifOpen && (
+                <div className="absolute left-0 mt-2 w-80 sm:w-96 max-w-[92vw] bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden z-50">
+                  <div className="px-3 pt-2.5 pb-2 border-b border-stone-100 bg-stone-50 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="font-bold text-sm text-stone-900">
-                        الإشعارات ({stats.unreadNotifications})
+                        الإشعارات ({totalUnreadBell})
                       </span>
-                      {stats.unreadNotifications > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => void markAllNotificationsAsRead()}
-                          className="text-xs font-semibold text-teal-700 hover:underline flex items-center gap-1 cursor-pointer"
-                        >
-                          <CheckCheck className="w-3.5 h-3.5" />
-                          <span>تحديد الكل كمقروء</span>
-                        </button>
+                      {notifTab === 'new-ads' ? (
+                        unreadNewAdAlertsCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={markNewAdAlertsSeen}
+                            className="text-xs font-semibold text-teal-700 hover:underline flex items-center gap-1 cursor-pointer"
+                          >
+                            <CheckCheck className="w-3.5 h-3.5" />
+                            <span>تحديد الكل كمقروء</span>
+                          </button>
+                        )
+                      ) : (
+                        user &&
+                        stats.unreadNotifications > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => void markAllNotificationsAsRead()}
+                            className="text-xs font-semibold text-teal-700 hover:underline flex items-center gap-1 cursor-pointer"
+                          >
+                            <CheckCheck className="w-3.5 h-3.5" />
+                            <span>تحديد الكل كمقروء</span>
+                          </button>
+                        )
                       )}
                     </div>
+
+                    {user && (
+                      <div className="grid grid-cols-2 gap-1.5 bg-stone-200/70 p-1 rounded-xl">
+                        <button
+                          type="button"
+                          onClick={() => setNotifTab('new-ads')}
+                          className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                            notifTab === 'new-ads'
+                              ? 'bg-white text-teal-800 shadow-xs'
+                              : 'text-stone-600 hover:text-stone-900'
+                          }`}
+                        >
+                          إعلانات جديدة ({unreadNewAdAlertsCount})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNotifTab('personal')}
+                          className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                            notifTab === 'personal'
+                              ? 'bg-white text-teal-800 shadow-xs'
+                              : 'text-stone-600 hover:text-stone-900'
+                          }`}
+                        >
+                          إشعاراتي ({stats.unreadNotifications})
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {notifTab === 'new-ads' || !user ? (
+                    <div className="max-h-80 overflow-y-auto divide-y divide-stone-100">
+                      {newAdAlerts.length === 0 ? (
+                        <div className="p-6 text-center text-xs text-stone-500">
+                          لا توجد إعلانات جديدة حالياً
+                        </div>
+                      ) : (
+                        newAdAlerts.slice(0, 12).map((alert) => {
+                          const isUnread =
+                            !(user?.id && alert.owner_id === user.id) &&
+                            (!newAlertsLastSeenAt || alert.created_at > newAlertsLastSeenAt);
+                          return (
+                            <button
+                              key={alert.id}
+                              type="button"
+                              onClick={() => handleNewAdAlertClick(alert)}
+                              className={`w-full p-3 text-right hover:bg-stone-50 transition-colors cursor-pointer flex items-center gap-3 ${
+                                isUnread ? 'bg-teal-50/50' : ''
+                              }`}
+                            >
+                              <div className="w-11 h-11 rounded-lg bg-stone-100 border border-stone-200 overflow-hidden shrink-0 flex items-center justify-center">
+                                {alert.image_url ? (
+                                  <img
+                                    src={alert.image_url}
+                                    alt={alert.title}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <Tag className="w-4 h-4 text-stone-400" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-bold text-stone-900 truncate">
+                                    {alert.title}
+                                  </span>
+                                  {isUnread && (
+                                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-teal-800 font-semibold mt-0.5 truncate">
+                                  {alert.category_name} · {formatPriceSDG(alert.price, alert.ad_type)}
+                                </p>
+                                <p className="text-[11px] text-stone-400 mt-0.5 truncate">
+                                  {alert.location || 'أبو جبيهة'} · {formatArabicDate(alert.created_at)}
+                                </p>
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  ) : (
                     <div className="max-h-80 overflow-y-auto divide-y divide-stone-100">
                       {notifications.length === 0 ? (
                         <div className="p-6 text-center text-xs text-stone-500">
-                          لا توجد إشعارات حالياً
+                          لا توجد إشعارات شخصية حالياً
                         </div>
                       ) : (
                         notifications.map((n) => (
@@ -217,10 +338,23 @@ export function Navbar({ route, onNavigate }: NavbarProps) {
                         ))
                       )}
                     </div>
+                  )}
+
+                  <div className="p-2.5 border-t border-stone-100 bg-stone-50">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNotifOpen(false);
+                        onNavigate({ page: 'new-ads-alerts' });
+                      }}
+                      className="w-full py-2 px-3 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      فتح قسم إشعارات الإعلانات الجديدة
+                    </button>
                   </div>
-                )}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
 
             {isStaff && (
               <button

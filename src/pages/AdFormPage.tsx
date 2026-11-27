@@ -1,6 +1,7 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Upload, X, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { Upload, X, ArrowRight, CheckCircle2, Sparkles, Loader2 } from 'lucide-react';
 import { uploadImages, ABU_JUBEIHA_AREAS } from '../lib/api';
+import { auth } from '../lib/firebase';
 import { createAd, fetchAdById, updateAd } from '../lib/firestoreApi';
 import { useAuth } from '../context/AuthContext';
 import type { AdType, AppRoute, Category } from '../types';
@@ -39,6 +40,11 @@ export function AdFormPage({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiDrafting, setAiDrafting] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiSuccess, setAiSuccess] = useState('');
 
   useEffect(() => {
     if (!categoryId && categories.length > 0) {
@@ -114,6 +120,89 @@ export function AdFormPage({
 
   const removeImage = (idx: number) => {
     setImages((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleAiDraft = async () => {
+    const prompt = aiPrompt.trim();
+    if (prompt.length < 4) {
+      setAiError('اكتب وصفاً مختصراً للسلعة أو الخدمة أولاً (مثل: موبايل سامسونج نظيف ب 300 ألف في حي المطار).');
+      return;
+    }
+    setAiError('');
+    setAiSuccess('');
+    setAiDrafting(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) {
+        throw new Error('يرجى تسجيل الدخول أولاً لاستخدام الصياغة الذكية.');
+      }
+      const resp = await fetch('/api/public/draft-ad', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          prompt,
+          categories: categories.map((c) => ({
+            slug: c.slug,
+            name_ar: c.name_ar,
+            subcategories: c.subcategories.map((s) => ({
+              slug: s.slug,
+              name_ar: s.name_ar,
+            })),
+          })),
+        }),
+      });
+      const data = (await resp.json().catch(() => null)) as {
+        draft?: {
+          title?: string;
+          description?: string;
+          category_slug?: string;
+          subcategory_slug?: string;
+          ad_type?: AdType;
+          price?: number;
+          is_negotiable?: boolean;
+          location?: string;
+        };
+        error?: string;
+      } | null;
+
+      if (!resp.ok || !data?.draft) {
+        throw new Error(data?.error || 'تعذر توليد صياغة الإعلان حالياً، يرجى المحاولة بعد قليل.');
+      }
+
+      const d = data.draft;
+      if (d.title) setTitle(d.title);
+      if (d.description) setDescription(d.description);
+
+      const matchedCat = categories.find((c) => c.slug === d.category_slug);
+      if (matchedCat) {
+        setCategoryId(matchedCat.id);
+        const matchedSub = matchedCat.subcategories.find((s) => s.slug === d.subcategory_slug);
+        setSubcategoryId(matchedSub ? matchedSub.id : '');
+      }
+
+      if (d.ad_type && ['offer', 'wanted', 'job', 'announcement'].includes(d.ad_type)) {
+        setAdType(d.ad_type);
+      }
+
+      if (typeof d.price === 'number' && Number.isFinite(d.price)) {
+        setPrice(d.price > 0 ? String(Math.round(d.price)) : '');
+      }
+      if (typeof d.is_negotiable === 'boolean') {
+        setIsNegotiable(d.is_negotiable);
+      }
+      if (d.location && d.location.trim()) {
+        setLocation(d.location.trim());
+      }
+
+      setAiSuccess('تمت صياغة الإعلان وتعبئة الحقول تلقائياً — يمكنك مراجعة التفاصيل وإضافة الصور قبل النشر.');
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'تعذر صياغة الإعلان حالياً.');
+    } finally {
+      setAiDrafting(false);
+    }
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -215,6 +304,67 @@ export function AdFormPage({
           {error && (
             <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-800">
               {error}
+            </div>
+          )}
+
+          {!isEditing && (
+            <div className="bg-teal-50/70 border border-teal-200 rounded-2xl p-4 sm:p-5 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center shrink-0">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-bold text-stone-900">
+                      كتابة الإعلان بالذكاء الاصطناعي
+                    </h2>
+                    <p className="text-xs text-stone-600">
+                      اكتب وصفاً مختصراً بلهجتك (السلعة، السعر، الحي، الحالة) وسيقوم المساعد بصياغة الإعلان وتحديد القسم تلقائياً
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <textarea
+                rows={2}
+                maxLength={1000}
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                placeholder="مثال: عندي لابتوب ديل i5 رام 16 نظيف جداً في حي المطار ب 650 ألف قابل للتفاوض"
+                className="w-full px-3.5 py-2.5 bg-white border border-teal-200 rounded-xl text-sm focus:outline-none focus:border-teal-700"
+              />
+
+              {aiError && (
+                <p className="text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                  {aiError}
+                </p>
+              )}
+              {aiSuccess && (
+                <p className="text-xs font-medium text-teal-800 bg-white border border-teal-200 rounded-lg px-3 py-2">
+                  {aiSuccess}
+                </p>
+              )}
+
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  disabled={aiDrafting}
+                  onClick={() => void handleAiDraft()}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold rounded-lg transition-colors cursor-pointer"
+                >
+                  {aiDrafting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>جاري صياغة الإعلان...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>صياغة الإعلان بالذكاء الاصطناعي</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           )}
 

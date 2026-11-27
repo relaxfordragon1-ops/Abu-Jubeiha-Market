@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   browserLocalPersistence,
   createUserWithEmailAndPassword,
@@ -36,11 +36,12 @@ import {
   markNotificationRead,
   seedDefaultCategoriesIfEmpty,
   seedSampleListingsInFirestore,
+  subscribeToNewAdAlerts,
   subscribeToNotifications,
   subscribeToUserMessages,
 } from '../lib/firestoreApi';
 import { BOOTSTRAP_ADMIN_EMAILS } from '../lib/marketplaceSearch';
-import type { AppNotification, User, UserRole } from '../types';
+import type { AppNotification, NewAdAlert, User, UserRole } from '../types';
 
 interface UserStats {
   unreadMessages: number;
@@ -59,6 +60,23 @@ interface PendingSignupProfile {
 
 const PENDING_PROFILE_KEY = 'abu_jubeiha_pending_profile';
 const CACHED_USER_KEY = 'abu_jubeiha_cached_user_v1';
+const NEW_ALERTS_SEEN_KEY = 'abu_jubeiha_alerts_last_seen_v1';
+
+function readAlertsLastSeen(): string {
+  try {
+    return window.localStorage.getItem(NEW_ALERTS_SEEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeAlertsLastSeen(iso: string): void {
+  try {
+    window.localStorage.setItem(NEW_ALERTS_SEEN_KEY, iso);
+  } catch {
+    // ignore storage write errors
+  }
+}
 
 function readCachedUser(): User | null {
   try {
@@ -175,6 +193,9 @@ interface AuthContextValue {
   user: User | null;
   stats: UserStats;
   notifications: AppNotification[];
+  newAdAlerts: NewAdAlert[];
+  newAlertsLastSeenAt: string;
+  unreadNewAdAlertsCount: number;
   loading: boolean;
   emailNotVerified: boolean;
   pendingEmail: string;
@@ -201,6 +222,7 @@ interface AuthContextValue {
   }) => Promise<void>;
   markNotificationAsRead: (notifId: string) => Promise<void>;
   markAllNotificationsAsRead: () => Promise<void>;
+  markNewAdAlertsSeen: () => void;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
 }
@@ -210,6 +232,8 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(() => readCachedUser());
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [newAdAlerts, setNewAdAlerts] = useState<NewAdAlert[]>([]);
+  const [newAlertsLastSeenAt, setNewAlertsLastSeenAt] = useState<string>(() => readAlertsLastSeen());
   const [stats, setStats] = useState<UserStats>({
     unreadMessages: 0,
     unreadNotifications: 0,
@@ -540,6 +564,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [ensureLocalPersistence, loadStatsForUid, syncVerifiedUser]);
 
+  // Subscribe to public new-ad alerts for both visitors and signed-in users
+  useEffect(() => {
+    const unsubAlerts = subscribeToNewAdAlerts((list) => {
+      setNewAdAlerts(list);
+    });
+    return () => unsubAlerts();
+  }, []);
+
+  const unreadNewAdAlertsCount = useMemo(() => {
+    return newAdAlerts.filter((a) => {
+      if (user?.id && a.owner_id === user.id) return false;
+      if (!newAlertsLastSeenAt) return true;
+      return a.created_at > newAlertsLastSeenAt;
+    }).length;
+  }, [newAdAlerts, newAlertsLastSeenAt, user?.id]);
+
+  const markNewAdAlertsSeen = useCallback(() => {
+    const nowIso = new Date().toISOString();
+    const newestCreatedAt = newAdAlerts[0]?.created_at || '';
+    const nextSeen = newestCreatedAt > nowIso ? newestCreatedAt : nowIso;
+    writeAlertsLastSeen(nextSeen);
+    setNewAlertsLastSeenAt(nextSeen);
+  }, [newAdAlerts]);
+
   // Attach real-time Firestore listeners only when auth is ready and user is authenticated
   useEffect(() => {
     if (!user?.id) {
@@ -757,6 +805,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         stats,
         notifications,
+        newAdAlerts,
+        newAlertsLastSeenAt,
+        unreadNewAdAlertsCount,
         loading,
         emailNotVerified,
         pendingEmail,
@@ -770,6 +821,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         updateAccountProfile,
         markNotificationAsRead,
         markAllNotificationsAsRead,
+        markNewAdAlertsSeen,
         logout,
         refreshMe,
       }}

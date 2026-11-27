@@ -23,6 +23,8 @@ export function routeToUrl(route: AppRoute): string {
       return `/ad/${encodeURIComponent(route.adId)}/edit`;
     case 'favorites':
       return '/favorites';
+    case 'new-ads-alerts':
+      return '/alerts';
     case 'messages': {
       const params = new URLSearchParams();
       if (route.withUserId) params.set('with', route.withUserId);
@@ -100,6 +102,10 @@ export function urlToRoute(href?: string): AppRoute {
       return { page: 'favorites' };
     }
 
+    if (path === '/alerts') {
+      return { page: 'new-ads-alerts' };
+    }
+
     if (path === '/messages') {
       return {
         page: 'messages',
@@ -149,6 +155,8 @@ export function getRouteTitle(route: AppRoute): string {
       return `تعديل الإعلان | ${base}`;
     case 'favorites':
       return `المفضلة | ${base}`;
+    case 'new-ads-alerts':
+      return `إشعارات الإعلانات الجديدة | ${base}`;
     case 'messages':
       return `الرسائل | ${base}`;
     case 'account':

@@ -504,6 +504,62 @@ function makeCreateWrite(
   };
 }
 
+function makeUpsertWrite(
+  collectionId: string,
+  docId: string,
+  fields: Record<string, unknown>,
+  serverTimestampFields: string[]
+): Record<string, unknown> {
+  const encodedFields: Record<string, FsValue> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    encodedFields[k] = toFsValue(v);
+  }
+  return {
+    update: {
+      name: docPath(collectionId, docId),
+      fields: encodedFields,
+    },
+    ...(serverTimestampFields.length > 0
+      ? {
+          updateTransforms: serverTimestampFields.map((fieldPath) => ({
+            fieldPath,
+            setToServerValue: 'REQUEST_TIME',
+          })),
+        }
+      : {}),
+  };
+}
+
+function makeNewAdAlertWrite(
+  adId: string,
+  existing: Record<string, unknown>
+): Record<string, unknown> {
+  const images = Array.isArray(existing.images) ? existing.images : [];
+  const rawType = String(existing.adType || 'offer');
+  const adType =
+    rawType === 'wanted' || rawType === 'job' || rawType === 'announcement'
+      ? rawType
+      : 'offer';
+  const cleanId = clampStr(adId, 110);
+  return makeUpsertWrite(
+    'newAdAlerts',
+    `alert_${cleanId}`,
+    {
+      adId: cleanId,
+      title: clampStr(existing.title || 'إعلان جديد', 160),
+      categoryName: clampStr(existing.categoryName || 'سوق أبو جبيهة', 100),
+      categorySlug: clampStr(existing.categorySlug || '', 80),
+      price: Math.max(0, Number(existing.price) || 0),
+      adType,
+      location: clampStr(existing.location || '', 120),
+      imageUrl: clampStr(images[0] || '', 500),
+      ownerId: clampStr(existing.ownerId || '', 128),
+      ownerName: clampStr(existing.ownerName || 'معلن', 80),
+    },
+    ['createdAt']
+  );
+}
+
 function makeAuditWrite(
   actorId: string,
   action: string,
@@ -974,6 +1030,13 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
       }
 
       await commitFirestoreWrite(writes, token);
+      if (decision === 'approve') {
+        try {
+          await commitFirestoreWrite([makeNewAdAlertWrite(adId, existing)], token);
+        } catch {
+          // Non-fatal if firestore.rules has not been published yet
+        }
+      }
       res.json({
         ok: true,
         id: adId,
@@ -1385,6 +1448,91 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
     } catch {
       res.status(503).json({
         detail: 'تعذر الاتصال بمساعد سند حالياً، يرجى المحاولة لاحقاً.',
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
+  // 10. Authenticated AI Ad Writer Proxy (-> Sanad /api/public/market-draft-ad)
+  app.post('/api/public/draft-ad', publicHelpRateLimit, async (req: Request, res: Response) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      res.status(401).json({ error: 'يرجى تسجيل الدخول لاستخدام ميزة كتابة الإعلان بالذكاء الاصطناعي.' });
+      return;
+    }
+    const idToken = authHeader.slice('Bearer '.length).trim();
+    const verified = await verifyFirebaseIdToken(idToken);
+    if (!verified.ok || !verified.localId || verified.disabled) {
+      res.status(verified.status || 401).json({ error: verified.error || 'جلسة الدخول غير صالحة.' });
+      return;
+    }
+    if (!verified.emailVerified) {
+      res.status(403).json({ error: 'يرجى تأكيد بريدك الإلكتروني أولاً لاستخدام الصياغة الذكية.' });
+      return;
+    }
+
+    const prompt = clampStr(req.body?.prompt || '', 1000);
+    if (prompt.length < 4) {
+      res.status(400).json({ error: 'يرجى كتابة وصف مختصر للسلعة أو الخدمة أولاً.' });
+      return;
+    }
+
+    const sanadUrl = getSanadApiUrl();
+    if (!sanadUrl) {
+      res.status(503).json({
+        error: 'خدمة الصياغة الذكية غير مربوطة حالياً (SANAD_API_URL غير مضاف في إعدادات الخادم).',
+      });
+      return;
+    }
+
+    const rawCats: unknown[] = Array.isArray(req.body?.categories) ? req.body.categories : [];
+    const categories = rawCats
+      .slice(0, 25)
+      .filter((c: unknown): c is Record<string, unknown> => Boolean(c) && typeof c === 'object')
+      .map((c: Record<string, unknown>) => ({
+        slug: clampStr(c.slug || '', 80),
+        name_ar: clampStr(c.name_ar || c.nameAr || '', 100),
+        subcategories: Array.isArray(c.subcategories)
+          ? (c.subcategories as unknown[])
+              .slice(0, 25)
+              .filter((s: unknown): s is Record<string, unknown> => Boolean(s) && typeof s === 'object')
+              .map((s: Record<string, unknown>) => ({
+                slug: clampStr(s.slug || '', 80),
+                name_ar: clampStr(s.name_ar || s.nameAr || '', 100),
+              }))
+          : [],
+      }));
+
+    const secret = getSanadWebhookSecret() || getSanadBridgeKey();
+    const origin = resolveAppBaseUrl(req);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const resp = await fetch(`${sanadUrl}/api/public/market-draft-ad`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(origin ? { Origin: origin } : {}),
+          ...(secret ? { 'x-sanad-key': secret } : {}),
+        },
+        body: JSON.stringify({ prompt, categories }),
+        signal: controller.signal,
+      });
+      const data = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!resp.ok || !data?.draft) {
+        res.status(resp.status >= 400 ? resp.status : 502).json({
+          error:
+            (typeof data?.detail === 'string' && data.detail) ||
+            (typeof data?.error === 'string' && data.error) ||
+            'تعذر توليد صياغة الإعلان حالياً، يرجى المحاولة بعد قليل.',
+        });
+        return;
+      }
+      res.json({ draft: data.draft });
+    } catch {
+      res.status(503).json({
+        error: 'تعذر الاتصال بخدمة الذكاء الاصطناعي حالياً، يرجى المحاولة لاحقاً.',
       });
     } finally {
       clearTimeout(timer);
