@@ -26,6 +26,10 @@ interface HomePageProps {
 
 const HERO_INTERVAL_MS = 5000;
 
+// Background photos for the headline area (switch every 10s)
+const HERO_BG_INTERVAL_MS = 10000;
+const HERO_BG_IMAGES = ['/hero/hero-1.jpg', '/hero/hero-2.jpg', '/hero/hero-3.jpg'];
+
 export function HomePage({
   categories,
   ads,
@@ -38,6 +42,7 @@ export function HomePage({
   const [searchQuery, setSearchQuery] = useState('');
   const [activeHeroIdx, setActiveHeroIdx] = useState(0);
   const [isHeroPaused, setIsHeroPaused] = useState(false);
+  const [heroBgIdx, setHeroBgIdx] = useState(0);
 
   const heroSlides = useMemo(() => {
     if (heroPromotions.length > 0) {
@@ -68,6 +73,18 @@ export function HomePage({
     return () => window.clearInterval(timer);
   }, [heroSlides.length, isHeroPaused]);
 
+  useEffect(() => {
+    // Warm the cache so the cross-fade never shows a blank frame
+    HERO_BG_IMAGES.forEach((src) => {
+      const img = new Image();
+      img.src = src;
+    });
+    const timer = window.setInterval(() => {
+      setHeroBgIdx((prev) => (prev + 1) % HERO_BG_IMAGES.length);
+    }, HERO_BG_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const currentSlide =
     heroSlides.length > 0 ? heroSlides[activeHeroIdx % heroSlides.length] : null;
 
@@ -93,15 +110,32 @@ export function HomePage({
       <section className="bg-white border-b border-stone-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 lg:py-12 grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
           {/* Right Column (RTL): Headline, Search Bar, Primary CTA */}
-          <div className="lg:col-span-7 flex flex-col justify-center space-y-6">
+          <div className="lg:col-span-7 relative isolate overflow-hidden rounded-3xl bg-stone-900 p-5 sm:p-8 flex flex-col justify-center gap-6">
+            {/* Rotating background photos (10s each, cross-fade) */}
+            <div className="absolute inset-0 -z-10" aria-hidden="true">
+              <AnimatePresence>
+                <motion.img
+                  key={HERO_BG_IMAGES[heroBgIdx]}
+                  src={HERO_BG_IMAGES[heroBgIdx]}
+                  alt=""
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 1.2, ease: 'easeInOut' }}
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              </AnimatePresence>
+              <div className="absolute inset-0 bg-gradient-to-t from-stone-950/80 via-stone-950/55 to-stone-950/50" />
+            </div>
+
             <div className="space-y-3">
-              <p className="text-xs sm:text-sm font-semibold text-teal-800">
+              <p className="text-xs sm:text-sm font-semibold text-amber-300">
                 أبو جبيهة وما حولها · جنوب كردفان
               </p>
-              <h1 className="font-display text-3xl sm:text-4xl lg:text-[42px] font-extrabold text-stone-900 leading-tight [text-wrap:balance]">
+              <h1 className="font-display text-3xl sm:text-4xl lg:text-[42px] font-extrabold text-white leading-tight [text-wrap:balance]">
                 سوق أبو جبيهة الإلكتروني للبيع والشراء والخدمات
               </h1>
-              <p className="text-base text-stone-600 max-w-2xl leading-relaxed">
+              <p className="text-base text-stone-100 max-w-2xl leading-relaxed">
                 منصة محلية موثوقة تجمع المشترين والبائعين وأصحاب العقارات والأراضي والحرفيين
                 وأصحاب العمل في أبو جبيهة في مكان واحد.
               </p>
