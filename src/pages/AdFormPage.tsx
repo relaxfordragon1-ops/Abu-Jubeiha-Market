@@ -8,6 +8,52 @@ import { PaymentAccountDetails } from '../components/PaymentAccountDetails';
 import { PAYMENT_ACCOUNTS } from '../lib/paymentAccounts';
 import type { Ad, AdType, AppRoute, Category } from '../types';
 
+const PAY_STAGE_KEY = 'abj_pay_stage_v1';
+const PAY_STAGE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+interface SavedPayStage {
+  uid: string;
+  savedAt: number;
+  ad: { id: string; title: string; price: number; location: string; images: string[] };
+  promoDays: number;
+  promoBannerUrl: string;
+}
+
+function savePayStage(data: SavedPayStage) {
+  try {
+    localStorage.setItem(PAY_STAGE_KEY, JSON.stringify(data));
+  } catch {
+    // التخزين غير متاح: نتجاهل
+  }
+}
+
+function clearPayStage() {
+  try {
+    localStorage.removeItem(PAY_STAGE_KEY);
+  } catch {
+    // التخزين غير متاح: نتجاهل
+  }
+}
+
+function loadPayStage(uid: string): SavedPayStage | null {
+  try {
+    const raw = localStorage.getItem(PAY_STAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as SavedPayStage;
+    if (
+      !data ||
+      data.uid !== uid ||
+      !data.ad?.id ||
+      Date.now() - data.savedAt > PAY_STAGE_MAX_AGE_MS
+    ) {
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
 interface AdFormPageProps {
   categories: Category[];
   editAdId?: string;
@@ -64,6 +110,17 @@ export function AdFormPage({
       setCategoryId(categories[0].id);
     }
   }, [categories, categoryId]);
+
+  // استرجاع مرحلة الدفع لو تم تحديث الصفحة أو إغلاقها قبل إكمال الدفع
+  useEffect(() => {
+    if (editAdId || !user?.id) return;
+    const saved = loadPayStage(user.id);
+    if (!saved) return;
+    setPromoDays(saved.promoDays);
+    setPromoBannerUrl(saved.promoBannerUrl);
+    setListingMode('paid');
+    setPaymentStage({ ad: saved.ad as unknown as Ad });
+  }, [editAdId, user?.id]);
 
   useEffect(() => {
     if (!editAdId) return;
@@ -271,6 +328,7 @@ export function AdFormPage({
         payment_receipt_url: promoReceiptUrl || undefined,
         banner_url: promoBannerUrl || undefined,
       });
+      clearPayStage();
       setSuccessMsg(`تم نشر الإعلان. ${msg}`);
       setPaymentStage(null);
     } catch (err: any) {
@@ -317,6 +375,21 @@ export function AdFormPage({
             images: payload.images,
           } as unknown as Ad;
           setPaymentStage({ ad: adForPromo });
+          if (user?.id) {
+            savePayStage({
+              uid: user.id,
+              savedAt: Date.now(),
+              ad: {
+                id: res.id,
+                title: payload.title,
+                price: payload.price,
+                location: payload.location,
+                images: payload.images,
+              },
+              promoDays,
+              promoBannerUrl,
+            });
+          }
           window.scrollTo({ top: 0, behavior: 'smooth' });
         } else {
           setSuccessMsg(res.message);
@@ -457,7 +530,10 @@ export function AdFormPage({
             </button>
             <button
               type="button"
-              onClick={() => onNavigate({ page: 'account', tab: 'my-ads' })}
+              onClick={() => {
+                clearPayStage();
+                onNavigate({ page: 'account', tab: 'my-ads' });
+              }}
               className="px-5 py-3 bg-stone-100 hover:bg-stone-200 text-stone-700 text-sm font-semibold rounded-xl cursor-pointer"
             >
               الدفع لاحقاً
