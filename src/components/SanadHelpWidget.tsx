@@ -1,13 +1,29 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Bot, CheckCircle2, MessageCircleQuestion, Send, Sparkles, X } from 'lucide-react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import {
+  Bot,
+  CheckCircle2,
+  ImagePlus,
+  Loader2,
+  LogIn,
+  MessageCircleQuestion,
+  Send,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { uploadImages } from '../lib/api';
+import { auth } from '../lib/firebase';
 import type { AppRoute } from '../types';
 
 interface HelpMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  images?: string[];
   escalated?: boolean;
   escalationFailed?: boolean;
+  needsAuth?: boolean;
+  submittedAd?: { id: string; title: string };
 }
 
 interface SanadHelpWidgetProps {
@@ -16,9 +32,9 @@ interface SanadHelpWidgetProps {
 }
 
 const QUICK_PROMPTS = [
-  'كيف أنشر إعلان مجاني؟',
-  'كيف أشترك في البنر المدفوع؟',
+  'عايز أرفع إعلان',
   'ابحث لي عن عقار أو أرض في أبوجبيهة',
+  'كيف أشترك في البنر المدفوع؟',
   'أريد التواصل مع إدارة السوق',
 ];
 
@@ -79,49 +95,132 @@ function renderMessageText(
 }
 
 export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
+  const { user, emailNotVerified } = useAuth();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [messages, setMessages] = useState<HelpMessage[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (open && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [open, messages, sending]);
+  }, [open, messages, sending, attachedImages]);
+
+  // Clear attached images if user signs out
+  useEffect(() => {
+    if (!user) {
+      setAttachedImages([]);
+    }
+  }, [user]);
 
   // Hide on full-screen messaging thread to keep mobile chat input uncluttered
   if (route.page === 'messages') {
     return null;
   }
 
+  const handleAttachButtonClick = () => {
+    setErrorMsg('');
+    if (!user) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a_${Date.now()}`,
+          role: 'assistant',
+          content: 'لإرفاق صورة ورفع إعلان عبر المساعد، يرجى تسجيل الدخول إلى حسابك في السوق أولاً.',
+          needsAuth: true,
+        },
+      ]);
+      return;
+    }
+    if (emailNotVerified) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a_${Date.now()}`,
+          role: 'assistant',
+          content: 'يرجى تأكيد بريدك الإلكتروني أولاً قبل إرفاق الصور أو رفع الإعلانات.',
+          needsAuth: true,
+        },
+      ]);
+      return;
+    }
+    fileInputRef.current?.click();
+  };
+
+  const handleImageFilesChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    e.target.value = '';
+    if (!files || files.length === 0) return;
+    if (!user || emailNotVerified) return;
+
+    const remainingSlots = Math.max(0, 4 - attachedImages.length);
+    if (remainingSlots === 0) {
+      setErrorMsg('يمكنك إرفاق 4 صور كحد أقصى عبر المساعد.');
+      return;
+    }
+
+    setErrorMsg('');
+    setUploadingImages(true);
+    try {
+      const selected = Array.from(files).slice(0, remainingSlots);
+      const urls = await uploadImages(selected);
+      if (urls.length > 0) {
+        setAttachedImages((prev) => [...prev, ...urls].slice(0, 4));
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'تعذر رفع الصورة حالياً، حاول مرة أخرى.');
+    } finally {
+      setUploadingImages(false);
+    }
+  };
+
+  const removeAttachedImage = (idx: number) => {
+    setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   const sendQuestion = async (rawQuestion: string) => {
-    const question = rawQuestion.trim();
-    if (question.length < 2 || sending) return;
+    const trimmed = rawQuestion.trim();
+    const question =
+      trimmed || (attachedImages.length > 0 ? 'أرفقت صورة للإعلان' : '');
+    if (question.length < 1 || sending || uploadingImages) return;
 
     setErrorMsg('');
     const userMsg: HelpMessage = {
       id: `u_${Date.now()}`,
       role: 'user',
       content: question,
+      ...(attachedImages.length > 0 && trimmed === '' ? { images: [...attachedImages] } : {}),
     };
-    const nextHistory = messages.slice(-6).map((m) => ({ role: m.role, content: m.content }));
+    const nextHistory = messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setSending(true);
 
     try {
+      const idToken = await auth.currentUser?.getIdToken().catch(() => null);
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (idToken) {
+        headers.Authorization = `Bearer ${idToken}`;
+      }
+
       const resp = await fetch('/api/public/help', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           question,
           history: nextHistory,
           context: {
             page: route.page,
             adId: route.page === 'ad-detail' ? route.adId : undefined,
+            attachedImages,
           },
         }),
       });
@@ -130,6 +229,8 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
         answer?: string;
         escalated?: boolean;
         escalationFailed?: boolean;
+        needsAuth?: boolean;
+        submittedAd?: { id: string; title: string };
         detail?: string;
         error?: string;
       } | null;
@@ -141,6 +242,10 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
         return;
       }
 
+      if (data?.submittedAd?.id) {
+        setAttachedImages([]);
+      }
+
       const answer = String(data?.reply ?? data?.answer ?? '').trim();
       setMessages((prev) => [
         ...prev,
@@ -150,6 +255,8 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
           content: answer || 'أهلاً بك! كيف أقدر أساعدك في سوق أبو جبيهة؟',
           escalated: Boolean(data?.escalated),
           escalationFailed: Boolean(data?.escalationFailed),
+          needsAuth: Boolean(data?.needsAuth),
+          submittedAd: data?.submittedAd,
         },
       ]);
     } catch {
@@ -164,10 +271,13 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
     void sendQuestion(input);
   };
 
+  const canSend =
+    !sending && !uploadingImages && (input.trim().length >= 1 || attachedImages.length > 0);
+
   return (
     <div className="fixed bottom-20 left-4 md:bottom-6 md:left-6 z-40" dir="rtl">
       {open && (
-        <div className="mb-3 w-[calc(100vw-2rem)] sm:w-[370px] max-h-[70vh] flex flex-col rounded-2xl bg-white border border-stone-200 shadow-2xl overflow-hidden">
+        <div className="mb-3 w-[calc(100vw-2rem)] sm:w-[380px] max-h-[72vh] flex flex-col rounded-2xl bg-white border border-stone-200 shadow-2xl overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 bg-teal-800 text-white">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl bg-white/15 flex items-center justify-center">
@@ -175,7 +285,9 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
               </div>
               <div>
                 <h3 className="font-display text-sm font-bold leading-tight">مساعد سوق أبو جبيهة</h3>
-                <p className="text-[11px] text-teal-100">مدعوم بذكاء سند للرد الفوري</p>
+                <p className="text-[11px] text-teal-100">
+                  {user ? `مرحباً ${user.name.split(' ')[0]} • جاهز لرفع إعلانك أو البحث` : 'مدعوم بذكاء سند للرد الفوري'}
+                </p>
               </div>
             </div>
             <button
@@ -195,13 +307,14 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
             {messages.length === 0 ? (
               <div className="space-y-3">
                 <div className="rounded-xl bg-white border border-stone-200 p-3 text-xs text-stone-700 leading-relaxed">
-                  أهلاً بك في <span className="font-bold text-teal-800">سوق أبو جبيهة</span>! اسألني عن
-                  طريقة نشر الإعلان، أو البنر المدفوع، أو ابحث عن أي سلعة أو خدمة متوفرة حالياً.
+                  أهلاً بك في <span className="font-bold text-teal-800">سوق أبو جبيهة</span>! أقدر
+                  أساعدك في <span className="font-semibold">رفع إعلانك خطوة بخطوة</span>، أو البحث عن
+                  أي سلعة أو عقار، أو الإجابة عن استفساراتك.
                 </div>
                 <div className="space-y-1.5">
                   <p className="text-[11px] font-semibold text-stone-500 flex items-center gap-1">
                     <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                    أسئلة شائعة:
+                    جرّب أن تسألني:
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {QUICK_PROMPTS.map((q) => (
@@ -233,7 +346,50 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
                     {msg.role === 'assistant'
                       ? renderMessageText(msg.content, onNavigate, () => setOpen(false))
                       : msg.content}
+                    {msg.images && msg.images.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {msg.images.map((url, idx) => (
+                          <img
+                            key={idx}
+                            src={url}
+                            alt="صورة مرفقة"
+                            className="w-12 h-12 rounded-lg object-cover border border-white/25"
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
+                  {msg.submittedAd && (
+                    <div className="mt-1.5 flex items-center gap-2 rounded-xl bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 text-[11px] text-emerald-900">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                      <span>تم رفع «{msg.submittedAd.title}» للمراجعة.</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onNavigate({ page: 'account', tab: 'my-ads' });
+                          setOpen(false);
+                        }}
+                        className="font-bold underline text-emerald-800 hover:text-emerald-950 cursor-pointer shrink-0"
+                      >
+                        إعلاناتي
+                      </button>
+                    </div>
+                  )}
+                  {msg.needsAuth && (!user || emailNotVerified) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onNavigate(
+                          !user ? { page: 'auth', mode: 'login' } : { page: 'account' }
+                        );
+                        setOpen(false);
+                      }}
+                      className="mt-1.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-800 hover:bg-teal-900 text-white text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      <LogIn className="w-3.5 h-3.5" />
+                      {!user ? 'تسجيل الدخول / إنشاء حساب' : 'الذهاب للحساب لتأكيد البريد'}
+                    </button>
+                  )}
                   {msg.escalated && (
                     <span className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
                       <CheckCircle2 className="w-3 h-3" />
@@ -252,7 +408,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
             {sending && (
               <div className="flex items-end justify-end">
                 <div className="rounded-2xl rounded-bl-sm bg-white border border-stone-200 px-3.5 py-2 text-xs text-stone-500">
-                  جاري البحث وكتابة الرد...
+                  جاري المعالجة وكتابة الرد...
                 </div>
               </div>
             )}
@@ -264,24 +420,71 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
             )}
           </div>
 
+          {attachedImages.length > 0 && (
+            <div className="px-3 py-2 bg-stone-50 border-t border-stone-200 flex items-center gap-2 overflow-x-auto">
+              {attachedImages.map((url, idx) => (
+                <div key={`${url}_${idx}`} className="relative shrink-0">
+                  <img
+                    src={url}
+                    alt={`صورة الإعلان ${idx + 1}`}
+                    className="w-11 h-11 rounded-lg object-cover border border-stone-300"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeAttachedImage(idx)}
+                    aria-label="إزالة الصورة"
+                    className="absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full bg-stone-800 text-white flex items-center justify-center hover:bg-red-600 cursor-pointer"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              ))}
+              <span className="text-[11px] text-stone-500 shrink-0">
+                {attachedImages.length === 1 ? 'صورة مرفقة للإعلان' : `${attachedImages.length} صور مرفقة`}
+              </span>
+            </div>
+          )}
+
           <form
             onSubmit={handleSubmit}
-            className="flex items-center gap-2 p-2.5 bg-white border-t border-stone-200"
+            className="flex items-center gap-1.5 p-2.5 bg-white border-t border-stone-200"
           >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              multiple
+              onChange={(e) => void handleImageFilesChange(e)}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={handleAttachButtonClick}
+              disabled={sending || uploadingImages}
+              title="إرفاق صورة للإعلان (اختياري)"
+              aria-label="إرفاق صورة للإعلان"
+              className="p-2 rounded-xl bg-stone-100 text-stone-700 hover:bg-stone-200 hover:text-teal-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer shrink-0"
+            >
+              {uploadingImages ? (
+                <Loader2 className="w-4 h-4 animate-spin text-teal-800" />
+              ) : (
+                <ImagePlus className="w-4 h-4" />
+              )}
+            </button>
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="اكتب استفسارك هنا..."
+              placeholder="اكتب استفسارك أو بيانات إعلانك..."
               maxLength={800}
               disabled={sending}
               className="flex-1 text-xs sm:text-sm px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-stone-900 placeholder:text-stone-400 focus:outline-none focus:border-teal-700"
             />
             <button
               type="submit"
-              disabled={sending || input.trim().length < 2}
-              aria-label="إرسال السؤال"
-              className="p-2.5 rounded-xl bg-teal-800 text-white hover:bg-teal-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+              disabled={!canSend}
+              aria-label="إرسال"
+              className="p-2.5 rounded-xl bg-teal-800 text-white hover:bg-teal-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer shrink-0"
             >
               <Send className="w-4 h-4" />
             </button>

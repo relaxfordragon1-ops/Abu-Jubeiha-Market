@@ -2,6 +2,11 @@ import crypto from 'crypto';
 import fs from 'fs';
 import type { Express, NextFunction, Request, Response } from 'express';
 import firebaseConfig from '../firebase-applet-config.json';
+import {
+  checkProhibitedContent,
+  DEFAULT_CATEGORIES_SEED,
+  normalizeSearchText,
+} from '../src/lib/marketplaceSearch';
 
 type VerifyFirebaseFn = (
   idToken: string
@@ -818,6 +823,242 @@ async function recordEscalation(
   return saved;
 }
 
+const assistantAdSubmitAllow = makeRateBucket(6, 3_600_000);
+
+function isSafeStoredImageRef(raw: unknown): boolean {
+  const val = clampStr(raw, 500);
+  if (!val) return false;
+  if (val.startsWith('/uploads/') && !val.includes('..')) return true;
+  try {
+    const parsed = new URL(val);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeImageList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    const val = clampStr(item, 500);
+    if (!val || !isSafeStoredImageRef(val) || seen.has(val)) continue;
+    seen.add(val);
+    out.push(val);
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+interface MarketCategoryEntry {
+  id: string;
+  slug: string;
+  nameAr: string;
+  subcategories: Array<{ id: string; slug: string; nameAr: string }>;
+}
+
+let categoriesCache: { at: number; items: MarketCategoryEntry[] } | null = null;
+
+async function getMarketCategoriesCached(token?: string): Promise<MarketCategoryEntry[]> {
+  if (categoriesCache && Date.now() - categoriesCache.at < 300_000) {
+    return categoriesCache.items;
+  }
+  const fallback: MarketCategoryEntry[] = DEFAULT_CATEGORIES_SEED.map((c) => ({
+    id: c.id,
+    slug: c.slug,
+    nameAr: c.nameAr,
+    subcategories: c.subcategories.map((s) => ({
+      id: s.id,
+      slug: s.slug,
+      nameAr: s.nameAr,
+    })),
+  }));
+  try {
+    const rows = await runFirestoreQuery('categories', {
+      whereEquals: [{ field: 'isActive', value: true }],
+      token,
+    });
+    if (rows.length > 0) {
+      const mapped = rows
+        .sort((a, b) => Number(a.sortOrder || 99) - Number(b.sortOrder || 99))
+        .map((c) => {
+          const subs = Array.isArray(c.subcategories) ? c.subcategories : [];
+          return {
+            id: clampStr(c.id || c.slug, 128),
+            slug: clampStr(c.slug || c.id, 80),
+            nameAr: clampStr(c.nameAr || c.slug, 100),
+            subcategories: subs
+              .filter((s): s is Record<string, unknown> => Boolean(s) && typeof s === 'object' && s.isActive !== false)
+              .map((s) => ({
+                id: clampStr(s.id || s.slug, 80),
+                slug: clampStr(s.slug || s.id, 80),
+                nameAr: clampStr(s.nameAr || s.slug, 100),
+              })),
+          };
+        })
+        .filter((c) => c.id && c.slug && c.nameAr);
+      if (mapped.length > 0) {
+        categoriesCache = { at: Date.now(), items: mapped };
+        return mapped;
+      }
+    }
+  } catch {
+    // fallback to default seed
+  }
+  categoriesCache = { at: Date.now(), items: fallback };
+  return fallback;
+}
+
+async function resolveCategoryAndSubcategory(
+  rawCategory: string,
+  rawSubcategory: string,
+  adType: string,
+  token?: string
+): Promise<{
+  categoryId: string;
+  categorySlug: string;
+  categoryName: string;
+  subcategorySlug: string;
+  subcategoryName: string;
+}> {
+  const cats = await getMarketCategoriesCached(token);
+  const normCat = normalizeSearchText(rawCategory);
+
+  let matched = cats.find(
+    (c) =>
+      normalizeSearchText(c.slug) === normCat ||
+      normalizeSearchText(c.id) === normCat ||
+      normalizeSearchText(c.nameAr) === normCat
+  );
+
+  if (!matched && normCat) {
+    matched = cats.find(
+      (c) =>
+        normalizeSearchText(c.nameAr).includes(normCat) ||
+        normCat.includes(normalizeSearchText(c.nameAr)) ||
+        normalizeSearchText(c.slug).includes(normCat)
+    );
+  }
+
+  if (!matched && normCat) {
+    const keywordMap: Array<[string[], string]> = [
+      [['مطلوب', 'ابحث', 'wanted'], 'wanted'],
+      [['وظيف', 'عمل', 'شغل', 'job'], 'jobs'],
+      [['ايجار', 'للايجار', 'شقه', 'rent'], 'properties-rent'],
+      [['عقار', 'بيت', 'منزل', 'عماره', 'دكان', 'محل'], 'properties-sale'],
+      [['ارض', 'قطعه', 'land'], 'land'],
+      [['سيار', 'موتر', 'ركش', 'دراج', 'car'], 'cars-transport'],
+      [['هاتف', 'تلفون', 'موبايل', 'جوال', 'ايفون', 'سامسونج', 'لابتوب', 'الكترون', 'شاش'], 'phones-electronics'],
+      [['اثاث', 'غرفه', 'ثلاج', 'مطبخ', 'كنب'], 'furniture-home'],
+      [['زراع', 'محاص', 'ذره', 'سمسم', 'غنم', 'بقر', 'ماشي'], 'agriculture-livestock'],
+      [['خدم', 'صيان', 'سباك', 'نجار', 'كهرب'], 'services-businesses'],
+      [['مجتمع', 'مفقود', 'فعال', 'مناسب'], 'community'],
+    ];
+    for (const [keys, targetSlug] of keywordMap) {
+      if (keys.some((k) => normCat.includes(normalizeSearchText(k)))) {
+        matched = cats.find((c) => c.slug === targetSlug);
+        if (matched) break;
+      }
+    }
+  }
+
+  if (!matched) {
+    if (adType === 'wanted') matched = cats.find((c) => c.slug === 'wanted');
+    else if (adType === 'job') matched = cats.find((c) => c.slug === 'jobs');
+    else if (adType === 'announcement') matched = cats.find((c) => c.slug === 'community');
+  }
+
+  if (!matched) {
+    matched = cats.find((c) => c.slug === 'miscellaneous') || cats[0];
+  }
+
+  let subSlug = '';
+  let subName = '';
+  const normSub = normalizeSearchText(rawSubcategory);
+  if (matched && normSub && matched.subcategories.length > 0) {
+    const subMatch = matched.subcategories.find(
+      (s) =>
+        normalizeSearchText(s.slug) === normSub ||
+        normalizeSearchText(s.id) === normSub ||
+        normalizeSearchText(s.nameAr) === normSub ||
+        normalizeSearchText(s.nameAr).includes(normSub) ||
+        normSub.includes(normalizeSearchText(s.nameAr))
+    );
+    if (subMatch) {
+      subSlug = subMatch.slug;
+      subName = subMatch.nameAr;
+    }
+  }
+
+  return {
+    categoryId: matched.id,
+    categorySlug: matched.slug,
+    categoryName: matched.nameAr,
+    subcategorySlug: subSlug,
+    subcategoryName: subName,
+  };
+}
+
+interface VerifiedWidgetUserContext {
+  authenticated: boolean;
+  emailVerified: boolean;
+  blocked: boolean;
+  uid: string;
+  name: string;
+  phone: string;
+  location: string;
+}
+
+async function resolveVerifiedWidgetUser(
+  req: Request,
+  verifyFirebaseIdToken: VerifyFirebaseFn
+): Promise<VerifiedWidgetUserContext | undefined> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return undefined;
+  }
+  const idToken = authHeader.slice('Bearer '.length).trim();
+  if (!idToken) return undefined;
+  const verified = await verifyFirebaseIdToken(idToken);
+  if (!verified.ok || !verified.localId || verified.disabled) {
+    return undefined;
+  }
+
+  let name = clampStr(verified.email?.split('@')[0] || '', 80);
+  let phone = '';
+  let location = '';
+  let blocked = false;
+
+  try {
+    const { token } = await getFirestoreAdminAuth();
+    const [userDoc, privateDoc] = await Promise.all([
+      getFirestoreDoc('users', verified.localId, token).catch(() => null),
+      getFirestoreDoc(`users/${verified.localId}/private`, 'info', token).catch(() => null),
+    ]);
+    if (userDoc) {
+      if (userDoc.name) name = clampStr(userDoc.name, 80);
+      if (userDoc.location) location = clampStr(userDoc.location, 120);
+      blocked = Boolean(userDoc.isBlocked);
+    }
+    if (privateDoc?.phone) {
+      phone = clampStr(privateDoc.phone, 40);
+    }
+  } catch {
+    // Firestore admin lookup optional for chat context
+  }
+
+  return {
+    authenticated: true,
+    emailVerified: Boolean(verified.emailVerified),
+    blocked,
+    uid: verified.localId,
+    name,
+    phone,
+    location,
+  };
+}
+
 export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: VerifyFirebaseFn): void {
   // 1. Admin Stats
   app.get('/api/sanad/stats', requireSanadKey, async (_req: Request, res: Response) => {
@@ -1424,11 +1665,11 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
     }
   });
 
-  // 9. Public Visitor Help Proxy (same-origin for Market Widget -> Sanad /api/public/market-help)
+  // 9. Public Visitor & Authenticated Help Proxy (same-origin for Market Widget -> Sanad /api/public/market-help)
   app.post('/api/public/help', publicHelpRateLimit, async (req: Request, res: Response) => {
     const question = clampStr(req.body?.question || '', 800);
-    if (question.length < 2) {
-      res.status(400).json({ detail: 'يرجى كتابة سؤالك أولاً.' });
+    if (question.length < 1) {
+      res.status(400).json({ detail: 'يرجى كتابة سؤالك أو ردك أولاً.' });
       return;
     }
 
@@ -1442,7 +1683,7 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
 
     const rawHistory: unknown[] = Array.isArray(req.body?.history) ? req.body.history : [];
     const history = rawHistory
-      .slice(-6)
+      .slice(-10)
       .filter(
         (m: unknown): m is { role: 'user' | 'assistant'; content: string } =>
           Boolean(m) &&
@@ -1452,12 +1693,24 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
       )
       .map((m) => ({ role: m.role, content: m.content.slice(0, 800) }));
 
+    const userContext = await resolveVerifiedWidgetUser(req, verifyFirebaseIdToken);
     const rawCtx = req.body?.context && typeof req.body.context === 'object' ? req.body.context : {};
+    const canAttachImages = Boolean(
+      userContext?.authenticated && userContext.emailVerified && !userContext.blocked
+    );
+    const attachedImages = canAttachImages ? sanitizeImageList(rawCtx.attachedImages) : [];
+    const categoriesList = await getMarketCategoriesCached()
+      .then((cats) => cats.map((c) => ({ slug: c.slug, nameAr: c.nameAr })))
+      .catch(() => []);
+
     const context = {
       page: typeof rawCtx.page === 'string' ? rawCtx.page.slice(0, 60) : undefined,
       adId: typeof rawCtx.adId === 'string' ? rawCtx.adId.slice(0, 80) : undefined,
+      attachedImages,
+      categories: categoriesList,
     };
 
+    const secret = getSanadWebhookSecret() || getSanadBridgeKey();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 32_000);
     try {
@@ -1467,8 +1720,9 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
         headers: {
           'Content-Type': 'application/json',
           ...(origin ? { Origin: origin } : {}),
+          ...(secret ? { 'x-sanad-key': secret } : {}),
         },
-        body: JSON.stringify({ question, history, context }),
+        body: JSON.stringify({ question, history, context, userContext }),
         signal: controller.signal,
       });
       const data = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
@@ -1494,6 +1748,214 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
       });
     } finally {
       clearTimeout(timer);
+    }
+  });
+
+  // 9b. Submit New Pending Ad via Sanad Assistant (Registered & Verified Users Only)
+  app.post('/api/sanad/ads/submit', requireSanadKey, async (req: Request, res: Response) => {
+    const ownerId = clampStr(req.body?.ownerId || '', 128);
+    if (!/^[a-zA-Z0-9_-]{3,128}$/.test(ownerId)) {
+      res.status(400).json({ error: 'معرف المستخدم غير صالح.' });
+      return;
+    }
+
+    const title = clampStr(req.body?.title || '', 160);
+    const description = clampStr(req.body?.description || '', 4000);
+    const location = clampStr(req.body?.location || '', 120);
+    const contactPhone = clampStr(req.body?.contactPhone || req.body?.contact_phone || '', 40);
+    const contactWhatsapp = clampStr(
+      req.body?.contactWhatsapp || req.body?.contact_whatsapp || contactPhone,
+      40
+    );
+    const documentInfo = clampStr(req.body?.documentInfo || '', 500);
+    const rawAdType = clampStr(req.body?.adType || req.body?.ad_type || 'offer', 20).toLowerCase();
+    const adType = ['offer', 'wanted', 'job', 'announcement'].includes(rawAdType)
+      ? rawAdType
+      : 'offer';
+    const priceNum = Math.max(0, Number(req.body?.price) || 0);
+    const isNegotiable =
+      typeof req.body?.isNegotiable === 'boolean'
+        ? req.body.isNegotiable
+        : typeof req.body?.is_negotiable === 'boolean'
+        ? req.body.is_negotiable
+        : priceNum === 0;
+    const rawCategory = clampStr(req.body?.category || req.body?.categorySlug || '', 100);
+    const rawSubcategory = clampStr(req.body?.subcategory || req.body?.subcategorySlug || '', 100);
+    const images = sanitizeImageList(req.body?.images);
+
+    if (title.length < 3 || title.length > 160) {
+      res.status(400).json({ error: 'يجب أن يكون عنوان الإعلان بين 3 و 160 حرفاً.' });
+      return;
+    }
+    if (description.length < 5 || description.length > 4000) {
+      res.status(400).json({ error: 'يجب أن يكون وصف الإعلان 5 أحرف على الأقل.' });
+      return;
+    }
+    if (location.length < 2) {
+      res.status(400).json({ error: 'يرجى تحديد الموقع أو الحي داخل أبوجبيهة.' });
+      return;
+    }
+    if (contactPhone.length < 6) {
+      res.status(400).json({ error: 'يرجى إدخال رقم هاتف أو واتساب صحيح للتواصل.' });
+      return;
+    }
+
+    const prohibited = checkProhibitedContent(`${title} ${description}`);
+    if (prohibited) {
+      res.status(400).json({
+        error: `عذراً، الإعلان يحتوي على محتوى غير مسموح به (${prohibited}).`,
+      });
+      return;
+    }
+
+    if (!assistantAdSubmitAllow(ownerId)) {
+      res.status(429).json({
+        error: 'تم تجاوز الحد المسموح لرفع الإعلانات عبر المساعد حالياً، يرجى المحاولة بعد ساعة.',
+      });
+      return;
+    }
+
+    try {
+      const { token, actorId } = await getFirestoreAdminAuth();
+      const [userDoc, privateDoc] = await Promise.all([
+        getFirestoreDoc('users', ownerId, token),
+        getFirestoreDoc(`users/${ownerId}/private`, 'info', token).catch(() => null),
+      ]);
+
+      if (!userDoc) {
+        res.status(403).json({
+          error: 'يرجى تسجيل الدخول وإكمال ملفك الشخصي في الموقع قبل رفع الإعلان.',
+        });
+        return;
+      }
+      if (userDoc.isBlocked) {
+        res.status(403).json({
+          error: 'هذا الحساب محظور ولا يمكنه نشر إعلانات حالياً.',
+        });
+        return;
+      }
+
+      const resolvedCat = await resolveCategoryAndSubcategory(rawCategory, rawSubcategory, adType, token);
+      const ownerName = clampStr(userDoc.name || req.body?.ownerName || 'معلن', 80) || 'معلن';
+      const ownerAvatar = clampStr(userDoc.avatarUrl || '', 500);
+      const ownerVerified = Boolean(userDoc.isVerifiedAccount);
+      const fallbackPhone = clampStr(privateDoc?.phone || '', 40);
+      const finalPhone = contactPhone || fallbackPhone;
+      const finalWhatsapp = contactWhatsapp || finalPhone;
+
+      const adId = `ad_sanad_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+
+      const writes: Array<Record<string, unknown>> = [
+        makeCreateWrite(
+          'ads',
+          adId,
+          {
+            ownerId,
+            ownerName,
+            ownerAvatar,
+            ownerVerified,
+            categoryId: resolvedCat.categoryId,
+            categorySlug: resolvedCat.categorySlug,
+            categoryName: resolvedCat.categoryName,
+            subcategorySlug: resolvedCat.subcategorySlug,
+            subcategoryName: resolvedCat.subcategoryName,
+            title,
+            description,
+            price: priceNum,
+            isNegotiable,
+            adType,
+            location,
+            contactPhone: finalPhone,
+            contactWhatsapp: finalWhatsapp,
+            documentInfo,
+            hasVerifiedDocs: false,
+            status: 'pending',
+            rejectionReason: '',
+            isFeatured: false,
+            isSample: false,
+            viewsCount: 0,
+            images,
+          },
+          ['createdAt', 'updatedAt']
+        ),
+        makeAuditWrite(
+          actorId,
+          'استلام إعلان قيد المراجعة عبر مساعد الموقع',
+          `${title} (${ownerName})`
+        ),
+      ];
+
+      if (ownerId !== actorId) {
+        writes.push(
+          makeNotificationWrite({
+            userId: ownerId,
+            title: 'تم استلام إعلانك للمراجعة',
+            body: `تم استلام إعلانك "${title}" عبر مساعد السوق وهو الآن قيد مراجعة الإدارة.`,
+            type: 'system',
+            linkAdId: adId,
+            linkPage: 'account',
+          })
+        );
+      }
+
+      await commitFirestoreWrite(writes, token);
+
+      const baseUrl = resolveAppBaseUrl(req);
+      const resolvedImages = images
+        .map((img) => {
+          if (img.startsWith('/') && !img.startsWith('//') && baseUrl) return `${baseUrl}${img}`;
+          return img;
+        })
+        .filter((u) => /^https?:\/\//i.test(u));
+
+      const sanadUrl = getSanadApiUrl();
+      const secret = getSanadWebhookSecret() || getSanadBridgeKey();
+      if (sanadUrl && secret) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        try {
+          await fetch(`${sanadUrl}/api/webhooks/market`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-sanad-key': secret,
+            },
+            body: JSON.stringify({
+              event: 'new_ad',
+              id: adId,
+              title,
+              category: resolvedCat.categoryName,
+              price: priceNum,
+              location,
+              owner_name: ownerName,
+              ad_type: adType,
+              image_url: resolvedImages[0] || undefined,
+              images: resolvedImages,
+              contact: finalPhone,
+              source: 'sanad_widget',
+              url: baseUrl ? `${baseUrl}/ad/${encodeURIComponent(adId)}` : undefined,
+            }),
+            signal: controller.signal,
+          });
+        } catch {
+          // best-effort notification to Sanad
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      res.status(201).json({
+        ok: true,
+        id: adId,
+        status: 'pending',
+        title,
+        categoryName: resolvedCat.categoryName,
+        message: 'تم إرسال إعلانك بنجاح بحالة قيد المراجعة (pending)، وسيظهر في الموقع بعد موافقة الإدارة.',
+      });
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : 'تعذر حفظ الإعلان حالياً، يرجى المحاولة بعد قليل.',
+      });
     }
   });
 
