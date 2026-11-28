@@ -101,6 +101,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
   const [sending, setSending] = useState(false);
   const [uploadingImages, setUploadingImages] = useState(false);
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [pendingChatImages, setPendingChatImages] = useState<string[]>([]);
   const [messages, setMessages] = useState<HelpMessage[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -116,6 +117,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
   useEffect(() => {
     if (!user) {
       setAttachedImages([]);
+      setPendingChatImages([]);
     }
   }, [user]);
 
@@ -154,9 +156,11 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
   };
 
   const handleImageFilesChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    e.target.value = '';
-    if (!files || files.length === 0) return;
+    const inputEl = e.currentTarget;
+    // Copy FileList before clearing input.value because clearing mutates the live FileList in Chromium/mobile browsers
+    const selectedFiles = inputEl.files ? Array.from(inputEl.files) : [];
+    inputEl.value = '';
+    if (selectedFiles.length === 0) return;
     if (!user || emailNotVerified) return;
 
     const remainingSlots = Math.max(0, 4 - attachedImages.length);
@@ -168,10 +172,13 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
     setErrorMsg('');
     setUploadingImages(true);
     try {
-      const selected = Array.from(files).slice(0, remainingSlots);
+      const selected = selectedFiles.slice(0, remainingSlots);
       const urls = await uploadImages(selected);
       if (urls.length > 0) {
         setAttachedImages((prev) => [...prev, ...urls].slice(0, 4));
+        setPendingChatImages((prev) => [...prev, ...urls].slice(0, 4));
+      } else {
+        setErrorMsg('تعذر رفع الصورة، يرجى المحاولة بصورة أخرى.');
       }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'تعذر رفع الصورة حالياً، حاول مرة أخرى.');
@@ -181,13 +188,25 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
   };
 
   const removeAttachedImage = (idx: number) => {
+    const targetUrl = attachedImages[idx];
     setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
+    if (targetUrl) {
+      setPendingChatImages((prev) => prev.filter((u) => u !== targetUrl));
+    }
   };
 
   const sendQuestion = async (rawQuestion: string) => {
     const trimmed = rawQuestion.trim();
+    const imagesForThisMessage = [...pendingChatImages];
     const question =
-      trimmed || (attachedImages.length > 0 ? 'أرفقت صورة للإعلان' : '');
+      trimmed ||
+      (imagesForThisMessage.length > 0
+        ? imagesForThisMessage.length === 1
+          ? 'أرفقت صورة للإعلان'
+          : `أرفقت ${imagesForThisMessage.length} صور للإعلان`
+        : attachedImages.length > 0
+        ? 'أرفقت صورة للإعلان'
+        : '');
     if (question.length < 1 || sending || uploadingImages) return;
 
     setErrorMsg('');
@@ -195,10 +214,11 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
       id: `u_${Date.now()}`,
       role: 'user',
       content: question,
-      ...(attachedImages.length > 0 && trimmed === '' ? { images: [...attachedImages] } : {}),
+      ...(imagesForThisMessage.length > 0 ? { images: imagesForThisMessage } : {}),
     };
     const nextHistory = messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
     setMessages((prev) => [...prev, userMsg]);
+    setPendingChatImages([]);
     setInput('');
     setSending(true);
 
@@ -244,6 +264,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
 
       if (data?.submittedAd?.id) {
         setAttachedImages([]);
+        setPendingChatImages([]);
       }
 
       const answer = String(data?.reply ?? data?.answer ?? '').trim();
@@ -350,10 +371,11 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {msg.images.map((url, idx) => (
                           <img
-                            key={idx}
+                            key={`${url}_${idx}`}
                             src={url}
                             alt="صورة مرفقة"
-                            className="w-12 h-12 rounded-lg object-cover border border-white/25"
+                            referrerPolicy="no-referrer"
+                            className="w-20 h-20 rounded-xl object-cover border border-white/30 bg-black/10"
                           />
                         ))}
                       </div>
@@ -427,6 +449,7 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
                   <img
                     src={url}
                     alt={`صورة الإعلان ${idx + 1}`}
+                    referrerPolicy="no-referrer"
                     className="w-11 h-11 rounded-lg object-cover border border-stone-300"
                   />
                   <button
@@ -439,8 +462,12 @@ export function SanadHelpWidget({ route, onNavigate }: SanadHelpWidgetProps) {
                   </button>
                 </div>
               ))}
-              <span className="text-[11px] text-stone-500 shrink-0">
-                {attachedImages.length === 1 ? 'صورة مرفقة للإعلان' : `${attachedImages.length} صور مرفقة`}
+              <span className="text-[11px] text-stone-600 shrink-0">
+                {pendingChatImages.length > 0
+                  ? 'جاهزة للإرسال (اضغط إرسال أو أضف رسالة)'
+                  : attachedImages.length === 1
+                  ? 'صورة مرفقة بالإعلان'
+                  : `${attachedImages.length} صور مرفقة بالإعلان`}
               </span>
             </div>
           )}
