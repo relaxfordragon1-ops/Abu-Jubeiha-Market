@@ -608,7 +608,7 @@ export async function fetchAdById(adId: string, currentUid?: string): Promise<Ad
 }
 
 async function notifySanadWebhook(payload: {
-  event: "new_ad" | "new_hero" | "new_report";
+  event: "new_ad" | "ad_approved" | "new_hero" | "new_report";
   id?: string;
   title?: string;
   category?: string;
@@ -718,6 +718,7 @@ export async function createAd(
         ownerId: user.id,
         ownerName: clampStr(user.name, 80) || 'معلن',
       });
+      void notifySanadWebhook({ event: "ad_approved", id });
     } else {
       void notifySanadWebhook({
         event: "new_ad",
@@ -1628,6 +1629,7 @@ export async function adminModerateAd(
         ownerId: ownerId || actor.id,
         ownerName: String(existing.ownerName || 'معلن'),
       });
+      void notifySanadWebhook({ event: "ad_approved", id: adId });
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);

@@ -1318,7 +1318,7 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
 
     const body = (req.body || {}) as Record<string, unknown>;
     const event = clampStr(body.event || '', 40);
-    if (!['new_ad', 'new_hero', 'new_report'].includes(event)) {
+    if (!['new_ad', 'ad_approved', 'new_hero', 'new_report'].includes(event)) {
       res.status(400).json({ error: 'نوع الحدث غير مدعوم.' });
       return;
     }
@@ -1328,19 +1328,27 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
       const s = clampStr(rawPath, 500);
       if (!s) return undefined;
       if (s.startsWith('/') && !s.startsWith('//') && baseUrl) return `${baseUrl}${s}`;
-      // Only forward absolute URLs that point at our own origin or Firebase/Google storage hosts
+      // Forward HTTPS URLs pointing at our origin or trusted storage providers (Firebase, Google Cloud, Supabase)
       try {
         const u = new URL(s);
-        const allowedHosts = new Set(['firebasestorage.googleapis.com', 'storage.googleapis.com']);
-        if (baseUrl) allowedHosts.add(new URL(baseUrl).host);
-        if (u.protocol === 'https:' && allowedHosts.has(u.host)) return u.toString();
+        if (u.protocol !== 'https:') return undefined;
+        const host = u.host.toLowerCase();
+        const allowedExact = new Set(['firebasestorage.googleapis.com', 'storage.googleapis.com']);
+        if (baseUrl) allowedExact.add(new URL(baseUrl).host.toLowerCase());
+        if (
+          allowedExact.has(host) ||
+          host.endsWith('.supabase.co') ||
+          host.endsWith('.firebasestorage.app')
+        ) {
+          return u.toString();
+        }
       } catch {
         // not a valid absolute URL
       }
       return undefined;
     };
 
-    const payload = {
+    let payload: Record<string, unknown> = {
       event,
       id: clampStr(body.id, 128) || undefined,
       title: clampStr(body.title, 160) || undefined,
@@ -1354,6 +1362,41 @@ export function registerSanadBridgeRoutes(app: Express, verifyFirebaseIdToken: V
       contact: clampStr(body.contact, 80) || undefined,
       message: clampStr(body.message, 600) || undefined,
     };
+
+    if (event === 'ad_approved') {
+      const adId = clampStr(body.id || '', 128);
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(adId)) {
+        res.status(400).json({ error: 'معرف الإعلان غير صالح.' });
+        return;
+      }
+      try {
+        const { token } = await getFirestoreAdminAuth();
+        const existing = await getFirestoreDoc('ads', adId, token);
+        if (!existing || String(existing.status || '') !== 'approved') {
+          res.status(403).json({ error: 'الإعلان غير معتمد بعد.' });
+          return;
+        }
+        const rawImgs = Array.isArray(existing.images) ? existing.images : [];
+        const resolvedImages = rawImgs.map((u) => resolveAsset(u)).filter((u): u is string => Boolean(u)).slice(0, 10);
+        payload = {
+          event: 'ad_approved',
+          id: adId,
+          title: clampStr(existing.title, 160) || undefined,
+          description: clampStr(existing.description, 1000) || undefined,
+          category: clampStr(existing.categoryName || existing.categorySlug, 100) || undefined,
+          price: existing.price !== undefined ? Number(existing.price) || 0 : undefined,
+          location: clampStr(existing.location, 120) || undefined,
+          owner_name: clampStr(existing.ownerName, 80) || undefined,
+          ad_type: clampStr(existing.adType, 40) || undefined,
+          image_url: resolvedImages[0] || undefined,
+          images: resolvedImages,
+          url: baseUrl ? `${baseUrl}/ad/${encodeURIComponent(adId)}` : undefined,
+        };
+      } catch {
+        res.status(503).json({ error: 'تعذر التحقق من حالة الإعلان.' });
+        return;
+      }
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
